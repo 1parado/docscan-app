@@ -25,6 +25,8 @@ function pdfPageCount(buf) {
 
 module.exports = function acceptance() {
   const s = new Suite('acceptance');
+  /** Titles this run wrote into the user's library; A12 deletes them again. */
+  const saved = [];
 
   s.test('A1 offline claim: no network permission in the release build', () => {
     const out = d.adb(['shell', 'dumpsys', 'package', d.PKG]);
@@ -62,6 +64,7 @@ module.exports = function acceptance() {
     must(field, 'the result page has no name field');
     const prefill = (field.text || field.desc || '').trim();
     must(AUTONAME_RE.test(prefill), `prefill "${prefill}" is not "M月D日 扫描 N"`);
+    saved.push(prefill);
     d.tap(UI.RESULT.save);
     d.tryWait(UI.RESULT.doneTitle, { timeoutMs: 90000 });
     f.home();
@@ -77,6 +80,7 @@ module.exports = function acceptance() {
     must(AUTONAME_RE.test(prefill), `second doc prefill "${prefill}" is malformed`);
     const n = Number(prefill.match(/(\d+)$/)[1]);
     must(n >= 2, `counter did not advance (got ${n})`);
+    saved.push(prefill);
     d.tap(UI.RESULT.save);
     d.tryWait(UI.RESULT.doneTitle, { timeoutMs: 90000 });
     f.home();
@@ -90,6 +94,7 @@ module.exports = function acceptance() {
     if (!imp.ok) return s.skip(`picker blocked at "${imp.stage}"`);
     must(imp.pages === 3, `session shows ${imp.pages} of 3 requested`);
     f.exportDoc('qa-3pages');
+    saved.push('qa-3pages');
     f.openDocs();
     const card = d.dump().find((n) => (n.desc || '').includes('qa-3pages'));
     must(card, 'the 3-page doc is not in the list');
@@ -182,6 +187,15 @@ module.exports = function acceptance() {
     const m = d.meminfo();
     must(m.totalPssKb < 500_000, `PSS ${(m.totalPssKb / 1024).toFixed(0)}MB after a full session`);
     return `PSS ${(m.totalPssKb / 1024).toFixed(0)}MB`;
+  });
+
+  // The acceptance cases export real PDFs into the user's own library. Whatever
+  // this run created is the run's to remove.
+  s.test('A12 exported test documents are cleaned up', () => {
+    let deleted = 0;
+    for (const title of saved) deleted += f.deleteSeeded(title);
+    if (deleted === 0) return saved.length ? `nothing of ${saved.join(', ')} was listed` : 'nothing exported';
+    return `${deleted} of ${saved.length} test documents deleted`;
   });
 
   return s.write();

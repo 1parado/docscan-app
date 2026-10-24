@@ -220,6 +220,46 @@ function tapSessionThumb(index) {
   return badge;
 }
 
+/**
+ * Delete every listed document whose title starts with `prefix`, page by page,
+ * through the Docs tab's own multi-select. Suites that create documents have to
+ * remove them again — the library is the user's, not the test's.
+ */
+function deleteSeeded(prefix, { rounds = 8 } = {}) {
+  let deleted = 0;
+  for (let round = 0; round < rounds; round++) {
+    openDocs();
+    d.sleep(900);
+    const seeds = d.dump().filter((n) => (n.desc || '').startsWith(prefix));
+    if (seeds.length === 0) break;
+    d.tap(UI.DOCS.multiSelect);
+    d.sleep(700);
+    for (const card of seeds) d.tapPoint(d.screenSize().w / 2, card.center.y);
+    d.sleep(500);
+    const before = docCount();
+    d.tap(UI.DOCS.delete);
+    d.sleep(900);
+    // The dialog repeats the word 删除 on its confirm button, so aim at the one
+    // below the question rather than the toolbar button above it.
+    const ask = d.dump().find((n) => /个文档？/.test(`${n.desc || ''} ${n.text || ''}`));
+    if (!ask) throw new Error(`no delete confirmation after selecting ${seeds.length} rows`);
+    const confirm = d
+      .dump()
+      .filter((n) => (n.desc || '') === UI.DOCS.delete && n.bounds.y1 > ask.bounds.y2)
+      .sort((a, b) => b.bounds.x1 - a.bounds.x1)[0];
+    if (!confirm) throw new Error('confirm button missing from the delete dialog');
+    d.tapPoint(confirm.center.x, confirm.center.y);
+    d.sleep(1500);
+    const after = docCount();
+    if (after != null && before != null && after >= before) {
+      throw new Error(`library did not shrink (${before} -> ${after})`);
+    }
+    deleted += seeds.length;
+  }
+  home();
+  return deleted;
+}
+
 module.exports = {
   readInt,
   docCount,
@@ -236,6 +276,7 @@ module.exports = {
   exportDoc,
   makeDoc,
   clearSession,
+  deleteSeeded,
   tapSessionThumb,
   settled,
   waitSettled,

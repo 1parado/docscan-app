@@ -204,37 +204,9 @@ module.exports = function scale() {
   // creates them has to remove them again — batch delete is the only path a
   // user has, and it is the same path this test then gets to prove at scale.
   s.test('S11 seeded test documents are cleaned up', () => {
-    const removed = [];
-    for (let round = 0; round < 8; round++) {
-      f.openDocs();
-      d.sleep(900);
-      const seeds = d.dump().filter((n) => (n.desc || '').startsWith('qa-scale-'));
-      if (seeds.length === 0) break;
-      d.tap(UI.DOCS.multiSelect);
-      d.sleep(700);
-      for (const card of seeds) d.tapPoint(screen.w / 2, card.center.y);
-      d.sleep(500);
-      const before = f.docCount();
-      d.tap(UI.DOCS.delete);
-      d.sleep(900);
-      // The dialog repeats the word 删除 on its confirm button, so aim at the
-      // one that sits under the question instead of the toolbar button.
-      const ask = d.dump().find((n) => /个文档？/.test(n.desc || n.text || ''));
-      must(ask, `no delete confirmation after selecting ${seeds.length} rows`);
-      const confirm = d
-        .dump()
-        .filter((n) => (n.desc || '') === UI.DOCS.delete && n.bounds.y1 > ask.bounds.y2)
-        .sort((a, b) => b.bounds.x1 - a.bounds.x1)[0];
-      must(confirm, 'confirm button missing from the delete dialog');
-      d.tapPoint(confirm.center.x, confirm.center.y);
-      d.sleep(1500);
-      removed.push(seeds.length);
-      const after = f.docCount();
-      must(after < before, `library did not shrink (${before} -> ${after})`);
-    }
-    f.home();
-    if (removed.length === 0) return 'nothing to clean up';
-    return `${removed.reduce((a, b) => a + b, 0)} seeded docs deleted in ${removed.length} round(s)`;
+    const deleted = f.deleteSeeded('qa-scale-');
+    if (deleted === 0) return 'nothing to clean up';
+    return `${deleted} seeded docs deleted through 多选 + 删除`;
   });
 
   return s.write();

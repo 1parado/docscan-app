@@ -45,9 +45,14 @@ dying on a bare "element not found".
 | env | default | meaning |
 | --- | --- | --- |
 | `ADB_PATH` | auto | adb binary location |
-| `DOCS_TARGET` | `60` | how many documents `scale` seeds |
+| `DOCS_TARGET` | `20` | how many documents `scale` seeds (one costs ~1 min of real import + export) |
 | `FIXTURE_PAGES` | `6` | pages in the large-session memory case |
 | `COLD_START_BUDGET_MS` | `2500` | smoke start-up budget |
+| `DOCSAN_APK` | unset | APK for `acceptance` A10 to upgrade-install over the running build |
+
+Seeding and exporting write into the phone's real library, so `scale` ends with
+S11 and `acceptance` with A12, both of which delete exactly what their own run
+created through 多选 → 删除 — the same path a user has, which that also proves.
 
 ## What "SKIP" means here
 
