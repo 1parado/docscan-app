@@ -16,19 +16,15 @@ class DocsPage extends ConsumerStatefulWidget {
 }
 
 class _DocsPageState extends ConsumerState<DocsPage> {
-  List<ScanDoc>? _docs;
   final _selected = <ScanDoc>{};
   bool _selecting = false;
 
   @override
   void initState() {
     super.initState();
-    _reload();
-  }
-
-  Future<void> _reload() async {
-    final docs = await LibraryStore.load();
-    if (mounted) setState(() => _docs = docs);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) ref.read(libraryProvider.notifier).reload();
+    });
   }
 
   Future<void> _renameOne(ScanDoc doc) async {
@@ -49,8 +45,7 @@ class _DocsPageState extends ConsumerState<DocsPage> {
       ),
     );
     if (name != null && name.isNotEmpty) {
-      await LibraryStore.rename(doc, name);
-      _reload();
+      await ref.read(libraryProvider.notifier).rename(doc, name);
     }
   }
 
@@ -76,15 +71,15 @@ class _DocsPageState extends ConsumerState<DocsPage> {
       ),
     );
     if (prefix == null || prefix.isEmpty) return;
+    final lib = ref.read(libraryProvider.notifier);
     final docs = _selected.toList()..sort((a, b) => a.createdAt.compareTo(b.createdAt));
     for (var i = 0; i < docs.length; i++) {
-      await LibraryStore.rename(docs[i], '$prefix${(i + 1).toString().padLeft(2, '0')}');
+      await lib.rename(docs[i], '$prefix${(i + 1).toString().padLeft(2, '0')}');
     }
     setState(() {
       _selected.clear();
       _selecting = false;
     });
-    _reload();
   }
 
   Future<void> _delete(ScanDoc doc) async {
@@ -104,14 +99,13 @@ class _DocsPageState extends ConsumerState<DocsPage> {
       ),
     );
     if (ok == true) {
-      await LibraryStore.delete(doc);
-      _reload();
+      await ref.read(libraryProvider.notifier).delete(doc);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final docs = _docs;
+    final docs = ref.watch(libraryProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -127,14 +121,12 @@ class _DocsPageState extends ConsumerState<DocsPage> {
           ] else
             IconButton(
               tooltip: '多选',
-              onPressed: docs != null && docs.isNotEmpty ? () => setState(() => _selecting = true) : null,
+              onPressed: docs.isNotEmpty ? () => setState(() => _selecting = true) : null,
               icon: const Icon(Icons.checklist),
             ),
         ],
       ),
-      body: docs == null
-          ? const Center(child: CircularProgressIndicator(color: Ds.clover))
-          : docs.isEmpty
+      body: docs.isEmpty
               ? _empty(context)
               : ListView.separated(
                   padding: EdgeInsets.only(

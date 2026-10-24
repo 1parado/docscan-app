@@ -143,7 +143,7 @@ class ScanSession extends Notifier<List<ScanPage>> {
       createdAt: DateTime.now(),
       firstPageImage: coverFile,
     );
-    await LibraryStore.addDoc(doc);
+    ref.read(libraryProvider.notifier).add(doc);
     clear();
     return doc;
   }
@@ -170,6 +170,36 @@ class ScanSession extends Notifier<List<ScanPage>> {
 }
 
 final sessionProvider = NotifierProvider<ScanSession, List<ScanPage>>(ScanSession.new);
+
+/// Reactive library: bump after every add/rename/delete so the Docs tab and
+/// the home recents stay in sync. (An IndexedStack tab never re-runs
+/// initState, so the old "load once" approach never saw new exports.)
+class Library extends Notifier<List<ScanDoc>> {
+  @override
+  List<ScanDoc> build() => [];
+
+  Future<void> reload() async {
+    state = await LibraryStore.load();
+  }
+
+  Future<void> add(ScanDoc doc) async {
+    await LibraryStore.addDoc(doc);
+    await reload();
+  }
+
+  Future<void> rename(ScanDoc doc, String title) async {
+    await LibraryStore.rename(doc, title);
+    await reload();
+  }
+
+  Future<void> delete(ScanDoc doc) async {
+    await LibraryStore.delete(doc);
+    await reload();
+  }
+}
+
+final libraryProvider =
+    NotifierProvider<Library, List<ScanDoc>>(Library.new);
 
 Future<Directory> documentsDir() async {
   final base = await getApplicationDocumentsDirectory();

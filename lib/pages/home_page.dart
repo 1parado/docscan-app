@@ -22,24 +22,12 @@ class HomePage extends ConsumerStatefulWidget {
 class _HomePageState extends ConsumerState<HomePage> {
   bool _busy = false;
   String? _flash;
-  List<ScanDoc>? _recent;
-
   @override
   void initState() {
     super.initState();
-    _reloadRecent();
-  }
-
-  Future<void> _reloadRecent() async {
-    final docs = await LibraryStore.load();
-    if (mounted) setState(() => _recent = docs);
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // Coming back from the result page refreshes the library.
-    _reloadRecent();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) ref.read(libraryProvider.notifier).reload();
+    });
   }
 
   Future<void> _shoot() async {
@@ -48,8 +36,6 @@ class _HomePageState extends ConsumerState<HomePage> {
       builder: (_) => const CameraPage(),
       fullscreenDialog: true,
     ));
-    _reloadRecent();
-    if (mounted) setState(() {});
   }
 
   Future<void> _pickFromAlbum() async {
@@ -78,7 +64,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   Widget build(BuildContext context) {
     final pages = ref.watch(sessionProvider);
     final session = ref.read(sessionProvider.notifier);
-    final recent = _recent ?? [];
+    final recent = ref.watch(libraryProvider);
     final pad = MediaQuery.of(context).padding;
 
     return Scaffold(
@@ -191,7 +177,6 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   Future<void> _openResult(BuildContext context) async {
     await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ResultPage()));
-    _reloadRecent();
     if (mounted) setState(() => _flash = null);
   }
 }
