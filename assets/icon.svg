@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- DocScan app icon: frosted glass sheet in a scanner's light frame.
+       The dark ink backdrop reads as the camera viewfinder; the tilted
+       paper is what you scan; the Clover corner brackets are the live
+       detection frame. -->
+  <defs>
+    <linearGradient id="bed" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b2329"/>
+      <stop offset="1" stop-color="#14181c"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#fbfdfc"/>
+      <stop offset="1" stop-color="#e4ece7"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bed)"/>
+
+  <!-- glass sheet, slightly tilted -->
+  <g transform="rotate(-7 256 260)">
+    <rect x="150" y="120" width="212" height="282" rx="20" fill="url(#glass)"/>
+    <!-- faint content lines on the sheet -->
+    <rect x="184" y="170" width="108" height="15" rx="7.5" fill="#2f8f63" opacity="0.85"/>
+    <rect x="184" y="208" width="140" height="10" rx="5" fill="#c9cec9"/>
+    <rect x="184" y="234" width="122" height="10" rx="5" fill="#c9cec9"/>
+    <rect x="184" y="260" width="134" height="10" rx="5" fill="#c9cec9"/>
+    <rect x="184" y="286" width="88" height="10" rx="5" fill="#c9cec9"/>
+    <!-- glass edge highlight -->
+    <rect x="150.8" y="120.8" width="210.4" height="280.4" rx="19.4" fill="none" stroke="#ffffff" stroke-opacity="0.7" stroke-width="2"/>
+  </g>
+
+  <!-- detection frame corners (Clover) -->
+  <g stroke="#3fae78" stroke-width="20" stroke-linecap="round" fill="none">
+    <path d="M88 172 v-44 a18 18 0 0 1 18 -18 h44"/>
+    <path d="M424 172 v-44 a18 18 0 0 0 -18 -18 h-44"/>
+    <path d="M88 340 v44 a18 18 0 0 0 18 18 h44"/>
+    <path d="M424 340 v44 a18 18 0 0 1 -18 18 h-44"/>
+  </g>
+
+  <!-- scan lamp line under the sheet -->
+  <rect x="118" y="428" width="276" height="12" rx="6" fill="#3fae78" opacity="0.9"/>
+  <rect x="118" y="425" width="276" height="18" rx="9" fill="#3fae78" opacity="0.25"/>
+</svg>
