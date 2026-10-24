@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image/image.dart' as img;
-
 import '../design/tokens.dart';
 import '../scan/pipeline.dart';
 import '../state/scan_state.dart';
