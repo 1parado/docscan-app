@@ -6,8 +6,8 @@ import 'package:share_plus/share_plus.dart';
 import '../design/tokens.dart';
 import '../state/scan_state.dart';
 
-/// Docs tab: the library. Rename by long-press, batch rename via multi-select,
-/// print / share / delete per doc. Auto-naming matches 日期+序号.
+/// Docs tab: library with viewer, filters (name / date range), pagination and
+/// batch operations (rename, delete). Persistence stays in LibraryStore.
 class DocsPage extends ConsumerStatefulWidget {
   const DocsPage({super.key});
 
@@ -18,6 +18,29 @@ class DocsPage extends ConsumerStatefulWidget {
 class _DocsPageState extends ConsumerState<DocsPage> {
   final _selected = <ScanDoc>{};
   bool _selecting = false;
+
+  // filters
+  String _query = '';
+  DateTimeRange? _range;
+
+  // pagination
+  static const _pageSize = 10;
+  int _page = 0;
+
+  List<ScanDoc> get _filtered {
+    final docs = ref.read(libraryProvider);
+    return docs.where((d) {
+      if (_query.isNotEmpty && !d.title.toLowerCase().contains(_query.toLowerCase())) {
+        return false;
+      }
+      if (_range != null &&
+          (d.createdAt.isBefore(_range!.start) ||
+           d.createdAt.isAfter(_range!.end.add(const Duration(days: 1))))) {
+        return false;
+      }
+      return true;
+    }).toList();
+  }
 
   @override
   void initState() {
@@ -103,9 +126,70 @@ class _DocsPageState extends ConsumerState<DocsPage> {
     }
   }
 
+  Future<void> _batchDelete() async {
+    final n = _selected.length;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('删除 $n 个文档？'),
+        content: const Text('选中的 PDF 将从设备上删除，无法恢复。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Ds.danger),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final lib = ref.read(libraryProvider.notifier);
+    for (final doc in _selected.toList()) {
+      await lib.delete(doc);
+    }
+    setState(() {
+      _selected.clear();
+      _selecting = false;
+      _page = 0;
+    });
+  }
+
+  Future<void> _pickDateRange() async {
+    final now = DateTime.now();
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(now.year - 5),
+      lastDate: now.add(const Duration(days: 1)),
+      initialDateRange: _range,
+      builder: (context, child) => Theme(
+        data: Theme.of(context).copyWith(
+          colorScheme: Theme.of(context).colorScheme.copyWith(primary: Ds.clover),
+        ),
+        child: child!,
+      ),
+    );
+    if (picked != null) {
+      setState(() {
+        _range = picked;
+        _page = 0;
+      });
+    }
+  }
+
+  void _openViewer(ScanDoc doc) {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => _PdfViewerPage(doc: doc),
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
-    final docs = ref.watch(libraryProvider);
+    ref.watch(libraryProvider); // rebuild on library changes
+    final all = _filtered;
+    final pageCount = (all.length / _pageSize).ceil().clamp(1, 1 << 20);
+    final safePage = _page.clamp(0, pageCount - 1);
+    final pageDocs = all.skip(safePage * _pageSize).take(_pageSize).toList();
 
     return Scaffold(
       appBar: AppBar(
@@ -115,113 +199,215 @@ class _DocsPageState extends ConsumerState<DocsPage> {
             TextButton(onPressed: _selected.isNotEmpty ? _batchRename : null,
                 child: const Text('批量命名')),
             TextButton(
+              onPressed: _selected.isNotEmpty ? _batchDelete : null,
+              child: Text('删除', style: TextStyle(color: Ds.danger)),
+            ),
+            TextButton(
               onPressed: () => setState(() { _selected.clear(); _selecting = false; }),
               child: const Text('完成'),
             ),
           ] else
             IconButton(
               tooltip: '多选',
-              onPressed: docs.isNotEmpty ? () => setState(() => _selecting = true) : null,
+              onPressed: all.isNotEmpty ? () => setState(() => _selecting = true) : null,
               icon: const Icon(Icons.checklist),
             ),
         ],
       ),
-      body: docs.isEmpty
-              ? _empty(context)
-              : ListView.separated(
-                  padding: EdgeInsets.only(
-                      left: 16, right: 16, top: 4,
-                      bottom: 100 + MediaQuery.of(context).padding.bottom),
-                  itemCount: docs.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 10),
-                  itemBuilder: (context, i) {
-                    final doc = docs[i];
-                    return _DocCard(
-                      doc: doc,
-                      selecting: _selecting,
-                      selected: _selected.contains(doc),
-                      onTap: () {
-                        if (_selecting) {
-                          setState(() {
-                            _selected.contains(doc) ? _selected.remove(doc) : _selected.add(doc);
-                          });
-                        } else {
-                          _openDoc(doc);
-                        }
-                      },
-                      onLongPress: () => _renameOne(doc),
-                      onDelete: () => _delete(doc),
-                      onShare: () => Share.shareXFiles(
-                        [XFile(doc.pdfFile.path, mimeType: 'application/pdf')],
-                        subject: doc.title,
-                      ),
-                      onPrint: () => Printing.layoutPdf(
-                        onLayout: (format) async => doc.pdfFile.readAsBytes(),
-                      ),
-                    );
-                  },
-                ),
-    );
-  }
-
-  Widget _empty(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+      body: Column(
         children: [
-          Icon(Icons.folder_open, size: 52, color: Colors.black.withValues(alpha: 0.18)),
-          const SizedBox(height: 12),
-          const Text('还没有文档', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
-          const SizedBox(height: 4),
-          const Text('扫描完成后会出现在这里', style: TextStyle(color: Ds.textDim, fontSize: 13)),
+          // ---------- filter bar ----------
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    onChanged: (v) => setState(() { _query = v; _page = 0; }),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      hintText: '按名称筛选',
+                      prefixIcon: const Icon(Icons.search, size: 18),
+                      contentPadding: const EdgeInsets.symmetric(vertical: 9),
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Colors.black.withValues(alpha: 0.08)),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Colors.black.withValues(alpha: 0.08)),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: _pickDateRange,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: _range != null ? Ds.clover.withValues(alpha: 0.12) : Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.date_range, size: 16,
+                            color: _range != null ? Ds.clover : Ds.textDim),
+                        const SizedBox(width: 5),
+                        Text(_range == null
+                                ? '日期'
+                                : '${_range!.start.month}/${_range!.start.day}-${_range!.end.month}/${_range!.end.day}',
+                            style: TextStyle(
+                                fontSize: 12.5,
+                                color: _range != null ? Ds.clover : Ds.textDim,
+                                fontWeight: _range != null ? FontWeight.w600 : FontWeight.w400)),
+                      ],
+                    ),
+                  ),
+                ),
+                if (_range != null || _query.isNotEmpty)
+                  GestureDetector(
+                    onTap: () => setState(() { _query = ''; _range = null; _page = 0; }),
+                    child: const Padding(
+                      padding: EdgeInsets.only(left: 8),
+                      child: Icon(Icons.close, size: 18, color: Ds.textDim),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          Text('${all.length} 个文档',
+              style: const TextStyle(color: Ds.textDim, fontSize: 11.5)),
+          // ---------- list ----------
+          Expanded(
+            child: all.isEmpty
+                ? _empty(context)
+                : ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                    itemCount: pageDocs.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (context, i) {
+                      final doc = pageDocs[i];
+                      return _DocCard(
+                        doc: doc,
+                        selecting: _selecting,
+                        selected: _selected.contains(doc),
+                        onTap: () {
+                          if (_selecting) {
+                            setState(() {
+                              _selected.contains(doc) ? _selected.remove(doc) : _selected.add(doc);
+                            });
+                          } else {
+                            _openViewer(doc);
+                          }
+                        },
+                        onLongPress: () => _renameOne(doc),
+                        onDelete: () => _delete(doc),
+                        onShare: () => Share.shareXFiles(
+                          [XFile(doc.pdfFile.path, mimeType: 'application/pdf')],
+                          subject: doc.title,
+                        ),
+                        onPrint: () => Printing.layoutPdf(
+                          onLayout: (format) async => doc.pdfFile.readAsBytes(),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          // ---------- pagination ----------
+          if (pageCount > 1)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton(
+                    onPressed: safePage > 0 ? () => setState(() => _page = safePage - 1) : null,
+                    icon: const Icon(Icons.chevron_left),
+                  ),
+                  for (var p = 0; p < pageCount; p++)
+                    GestureDetector(
+                      onTap: () => setState(() => _page = p),
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 4),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: p == safePage ? Ds.clover : Colors.white,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: p == safePage ? Ds.clover : Colors.black.withValues(alpha: 0.08)),
+                        ),
+                        child: Text('${p + 1}', style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: p == safePage ? FontWeight.w600 : FontWeight.w400,
+                            color: p == safePage ? Colors.white : Ds.textDim)),
+                      ),
+                    ),
+                  IconButton(
+                    onPressed: safePage < pageCount - 1 ? () => setState(() => _page = safePage + 1) : null,
+                    icon: const Icon(Icons.chevron_right),
+                  ),
+                ],
+              ),
+            )
+          else
+            SizedBox(height: MediaQuery.of(context).padding.bottom + 24),
         ],
       ),
     );
   }
 
-  Future<void> _openDoc(ScanDoc doc) async {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 8),
-            ListTile(
-              leading: const Icon(Icons.ios_share),
-              title: const Text('分享 PDF'),
-              onTap: () {
-                Navigator.pop(context);
-                Share.shareXFiles([XFile(doc.pdfFile.path, mimeType: 'application/pdf')],
-                    subject: doc.title);
-              },
+  Widget _empty(BuildContext context) {
+    final filtered = _query.isNotEmpty || _range != null;
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(filtered ? Icons.search_off : Icons.folder_open,
+              size: 52, color: Colors.black.withValues(alpha: 0.18)),
+          const SizedBox(height: 12),
+          Text(filtered ? '没有匹配的文档' : '还没有文档',
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+          const SizedBox(height: 4),
+          Text(filtered ? '换个名称或日期范围试试' : '扫描完成后会出现在这里',
+              style: const TextStyle(color: Ds.textDim, fontSize: 13)),
+        ],
+      ),
+    );
+  }
+
+/// In-app PDF viewer. The printing package's PdfPageable renders pages as
+/// scrollable widgets — no external viewer, no network.
+class _PdfViewerPage extends StatelessWidget {
+  const _PdfViewerPage({required this.doc});
+
+  final ScanDoc doc;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Ds.ink,
+      appBar: AppBar(
+        backgroundColor: Ds.ink,
+        foregroundColor: Colors.white,
+        title: Text(doc.title, style: const TextStyle(color: Colors.white)),
+        actions: [
+          IconButton(
+            tooltip: '分享',
+            onPressed: () => Share.shareXFiles(
+              [XFile(doc.pdfFile.path, mimeType: 'application/pdf')],
+              subject: doc.title,
             ),
-            ListTile(
-              leading: const Icon(Icons.print_outlined),
-              title: const Text('打印'),
-              onTap: () {
-                Navigator.pop(context);
-                Printing.layoutPdf(onLayout: (format) async => doc.pdfFile.readAsBytes());
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.drive_file_rename_outline),
-              title: const Text('重命名'),
-              onTap: () {
-                Navigator.pop(context);
-                _renameOne(doc);
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.delete_outline, color: Ds.danger),
-              title: Text('删除', style: TextStyle(color: Ds.danger)),
-              onTap: () {
-                Navigator.pop(context);
-                _delete(doc);
-              },
-            ),
-          ],
-        ),
+            icon: const Icon(Icons.ios_share),
+          ),
+        ],
+      ),
+      body: PdfPageable(
+        buildDocument: (format) async => doc.pdfFile.readAsBytes(),
       ),
     );
   }
