@@ -310,17 +310,41 @@ List<double> _homography(
   return [for (var i = 0; i < 8; i++) m[i][8] / m[i][i]];
 }
 
+/// Grayscale max-filter (dilate) over a square kernel — the image package
+/// has none built in.
+void dilateMax(img.Image im, int r) {
+  final copy = img.Image.from(im);
+  final c = copy.data!;
+  final o = im.data!;
+  for (var y = 0; y < im.height; y++) {
+    for (var x = 0; x < im.width; x++) {
+      var best = -1;
+      for (var dy = -r; dy <= r; dy++) {
+        final yy = (y + dy).clamp(0, im.height - 1);
+        for (var dx = -r; dx <= r; dx++) {
+          final xx = (x + dx).clamp(0, im.width - 1);
+          final v = c.getPixel(xx, yy).r.toInt();
+          if (v > best) best = v;
+        }
+      }
+      o.setPixelRgb(x, y, best, best, best);
+    }
+  }
+}
+
 /// Port of enhance.remove_shadow: background is low-frequency, so the dilate
 /// + median chain runs on a quarter-scale copy and is upscaled once.
 img.Image removeShadow(img.Image rgb) {
   final w = rgb.width, h = rgb.height;
   final sw = math.max(1, w ~/ 4), sh = math.max(1, h ~/ 4);
   final small = img.copyResize(rgb, width: sw, height: sh, interpolation: img.Interpolation.average);
-  // Median via per-channel quantile on a heavily blurred copy — the image
-  // package lacks a true median filter; blur(9) approximates the background
-  // estimate well enough after downscaling. gaussianBlur mutates in place,
-  // so it must own the copy.
-  final bg = img.gaussianBlur(img.Image.from(small), radius: 6);
+  // Background estimate = dilate(7) then median(21) on the web. The image
+  // package has no median filter, so: dilate (max filter — this is what
+  // brightens paper out of the shadow; skipping it was why app output kept
+  // the gray cast), then a blur wide enough to match median-21's footprint
+  // (sigma ~7 ≈ 2/3·10 → radius 10).
+  dilateMax(small, 4);
+  final bg = img.gaussianBlur(img.Image.from(small), radius: 10);
   final bgUp = img.copyResize(bg, width: w, height: h, interpolation: img.Interpolation.linear);
 
   final out = img.Image.from(rgb);
@@ -410,7 +434,8 @@ img.Image _sharpen(img.Image src, double amount) {
 
 /// CLAHE substitute: local contrast via blurred-background division.
 void _claheLite(img.Image g) {
-  final bg = img.gaussianBlur(img.Image.from(g), radius: 24);
+  // Web uses CLAHE(clip 2.0, 8x8 tiles) ≈ background window of page/8.
+  final bg = img.gaussianBlur(img.Image.from(g), radius: math.max(4, g.width ~/ 16));
   final s = g.data!;
   final b = bg.data!;
   for (var y = 0; y < g.height; y++) {
