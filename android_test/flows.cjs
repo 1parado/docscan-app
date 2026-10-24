@@ -129,24 +129,52 @@ function waitSettled(timeoutMs = 90000) {
   return false;
 }
 
+/**
+ * One album trip, verified. The picker closing is not evidence that a page
+ * arrived: a tap issued while the list is still gliding lands on a gap and the
+ * picker just stays open, and 相册 is silently ignored while the app is still
+ * processing the previous photo. So the trip only counts once the session grows
+ * by one, and the whole picker is cancelled and retried until that happens.
+ */
+function importOnePage(want, { perPageMs = 90000, attempts = 3 } = {}) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (!ensureHome()) return { ok: false, stage: 'home', detail: `cannot reach home before importing ${want}` };
+    if (!waitSettled()) return { ok: false, stage: 'busy', detail: `app never went idle before ${want}` };
+    const before = sessionCount() ?? 0;
+    const r = picker.takeOne(new RegExp(want), { album: UI.HOME.album, settleMs: perPageMs });
+    if (r.ok) {
+      // The app opens the export screen by itself once the album import is done,
+      // and 相册 only exists on the home view — so step back out of it.
+      if (UI.onScreen(d.dump()) === 'result') {
+        d.back();
+        d.sleep(1000);
+      }
+      const end = Date.now() + 60000;
+      while (Date.now() < end) {
+        const now = sessionCount();
+        if (now != null && now > before) return { ok: true, pages: now, attempt, taken: r };
+        d.sleep(1000);
+      }
+    }
+    picker.cancel();
+    d.sleep(800);
+  }
+  return {
+    ok: false,
+    stage: 'verify',
+    detail: `${want} never added a page in ${attempts} attempts`,
+  };
+}
+
 function importPages(pages, { fixtures = DEFAULT_FIXTURES, perPageMs = 90000 } = {}) {
   if (pages > fixtures.length) {
     return { ok: false, stage: 'fixtures', detail: `asked for ${pages} pages, only ${fixtures.length} fixtures available` };
   }
   const taken = [];
   for (const want of fixtures.slice(0, pages)) {
-    if (!ensureHome()) return { ok: false, stage: 'home', detail: `cannot reach home before importing ${want}` };
-    if (!waitSettled()) return { ok: false, stage: 'busy', detail: `app never went idle before ${want}` };
-    const r = picker.takeOne(new RegExp(want), { album: UI.HOME.album, settleMs: perPageMs });
+    const r = importOnePage(want, { perPageMs });
     if (!r.ok) return { ok: false, stage: `import:${want}`, detail: r };
-    taken.push({ name: r.picked, ms: r.ms });
-    // The app opens the export screen by itself once the album import is done,
-    // and 相册 only exists on the home view — so each trip has to step back out
-    // of it before the next page can be added.
-    if (UI.onScreen(d.dump()) === 'result') {
-      d.back();
-      d.sleep(1000);
-    }
+    taken.push({ name: r.taken.picked, ms: r.taken.ms, attempt: r.attempt });
   }
   if (!ensureHome()) return { ok: false, stage: 'home', detail: 'cannot return to the session view' };
   return { ok: true, pages: sessionCount(), taken };
@@ -272,6 +300,7 @@ module.exports = {
   setMode,
   toggleCrop,
   importPages,
+  importOnePage,
   openResult,
   exportDoc,
   makeDoc,

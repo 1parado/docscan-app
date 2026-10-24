@@ -113,6 +113,24 @@ function findRow(re, { scrolls = 8 } = {}) {
 }
 
 /**
+ * The list can still be gliding from the last findRow scroll when the tap is
+ * issued, and a tap that lands on a gap or on another row leaves the picker
+ * open with focus nowhere near the app. So only tap once the same row sits at
+ * the same y in two consecutive dumps.
+ */
+function steadyRow(re, { tries = 6 } = {}) {
+  let prev = null;
+  for (let i = 0; i < tries; i++) {
+    d.sleep(450);
+    const hit = rows(d.dump()).find((r) => re.test(r.name));
+    if (!hit) return null;
+    if (prev && Math.abs(hit.y - prev) <= 4) return hit;
+    prev = hit.y;
+  }
+  return null;
+}
+
+/**
  * Commit exactly one image to the app.
  * `settle` waits for the app to come back and for the pipeline to reach a
  * screen we can name, because a picker tap returns long before processing ends.
@@ -125,11 +143,12 @@ function takeOne(re, { album = '相册', settleMs = 90000 } = {}) {
   const mode = ensureList();
   if (!mode.list) return { ok: false, stage: 'list-view', detail: mode.reason };
 
-  const row = findRow(re);
+  let row = findRow(re);
   if (!row) {
     d.back();
     return { ok: false, stage: 'find', detail: `no visible row matching ${re}` };
   }
+  row = steadyRow(re) || row;
 
   const screen = d.screenSize();
   d.tapPoint(Math.round(screen.w / 2), row.y);

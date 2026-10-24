@@ -15,7 +15,6 @@
 const d = require('../driver.cjs');
 const UI = require('../ui.cjs');
 const f = require('../flows.cjs');
-const P = require('../picker.cjs');
 const png = require('../png.cjs');
 const setup = require('../setup.cjs');
 const { Suite, must } = require('../harness.cjs');
@@ -142,8 +141,8 @@ module.exports = function system() {
   gated('undetectable page keeps the crop warning on screen', () => {
     f.home();
     if (f.sessionCount() != null) f.clearSession();
-    const r = P.takeOne(/nodoc/, { album: UI.HOME.album, settleMs: 120000 });
-    if (!r.ok) throw new Error(`picker failed at stage "${r.stage}": ${JSON.stringify(r.detail)}`);
+    const r = f.importOnePage('fixture_nodoc', { perPageMs: 120000 });
+    if (!r.ok) throw new Error(`import failed at stage "${r.stage}": ${JSON.stringify(r.detail)}`);
     const screen = UI.onScreen(d.dump());
     must(screen !== 'result', `the app jumped to the export screen; ${UI.HOME.cropWarning} is unreadable there`);
     const hit = d.find(UI.HOME.cropWarning) || (d.sleep(1500), d.find(UI.HOME.cropWarning));
@@ -392,6 +391,14 @@ module.exports = function system() {
     d.sleep(800);
     d.grantAllPermissions();
     return text.includes(UI.CAMERA.unavailable) ? 'fallback shown' : 'prompt or preview handled';
+  });
+
+  // The export cases write real documents into the user's library, so the run
+  // that created them removes them again — but only the ones it named.
+  s.test('test documents created by this run are cleaned up', () => {
+    const deleted = f.deleteSeeded('qa-');
+    if (deleted === 0) return 'nothing to clean up';
+    return `${deleted} qa- documents deleted`;
   });
 
   s.test('no defect markers surfaced during the run', () => {

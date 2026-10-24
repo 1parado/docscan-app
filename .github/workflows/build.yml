@@ -6,6 +6,12 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# The tag build attaches the APK to a GitHub Release, and the default
+# GITHUB_TOKEN is read-only, so "Create a release" fails with
+# "Resource not accessible by integration" without this.
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
