@@ -188,11 +188,15 @@ class _CameraPageState extends ConsumerState<CameraPage> {
             ),
 
           // Top glass bar: everything lives here, nothing floats mid-screen.
-          SafeArea(
-            bottom: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-              child: Glass(
+          // Positioned gives the bar bounded constraints — without it the
+          // BackdropFilter fills the whole Stack and hides the viewfinder.
+          Positioned(
+            top: 0, left: 0, right: 0,
+            child: SafeArea(
+              bottom: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+                child: Glass(
                 dark: true,
                 radius: Ds.radiusSmall,
                 padding: const EdgeInsets.fromLTRB(4, 4, 4, 4),
@@ -233,6 +237,7 @@ class _CameraPageState extends ConsumerState<CameraPage> {
                       ),
                     ),
                   ],
+                ),
                 ),
               ),
             ),
