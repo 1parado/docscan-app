@@ -80,9 +80,15 @@ void main(List<String> args) {
           stdout.writeln('ok   $name status=$status');
         }
       case 'tilt':
-        // Reported, not asserted: this is the detector's real-world limitation.
-        stdout.writeln('probe $name (${tiltDegrees}°) status=$status '
-            '${status == 'not_found' ? "<-- tilted documents are NOT auto-cropped" : ""}');
+        // Asserted since the coverage band in findQuads scaled with the shape:
+        // a page square to the frame was not the real case, and a detector that
+        // only fires at 0° sends every photographed document to manual cropping.
+        if (status != 'cropped') {
+          failures++;
+          stdout.writeln('FAIL $name (${tiltDegrees}°) status=$status (expected cropped)');
+        } else {
+          stdout.writeln('ok   $name (${tiltDegrees}°) status=$status');
+        }
     }
   }
   stdout.writeln('${written.length} fixtures written, $failures failed the pipeline check');
