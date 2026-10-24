@@ -6,8 +6,8 @@ import 'package:share_plus/share_plus.dart';
 import '../design/tokens.dart';
 import '../state/scan_state.dart';
 
-/// Docs tab: library with viewer, filters (name / date range), pagination and
-/// batch operations (rename, delete). Persistence stays in LibraryStore.
+/// Docs tab: the library. Rename by long-press, batch rename via multi-select,
+/// print / share / delete per doc. Auto-naming matches 日期+序号.
 class DocsPage extends ConsumerStatefulWidget {
   const DocsPage({super.key});
 
@@ -30,12 +30,13 @@ class _DocsPageState extends ConsumerState<DocsPage> {
   List<ScanDoc> get _filtered {
     final docs = ref.read(libraryProvider);
     return docs.where((d) {
-      if (_query.isNotEmpty && !d.title.toLowerCase().contains(_query.toLowerCase())) {
+      if (_query.isNotEmpty &&
+          !d.title.toLowerCase().contains(_query.toLowerCase())) {
         return false;
       }
       if (_range != null &&
           (d.createdAt.isBefore(_range!.start) ||
-           d.createdAt.isAfter(_range!.end.add(const Duration(days: 1))))) {
+              d.createdAt.isAfter(_range!.end.add(const Duration(days: 1))))) {
         return false;
       }
       return true;
@@ -105,27 +106,6 @@ class _DocsPageState extends ConsumerState<DocsPage> {
     });
   }
 
-  Future<void> _delete(ScanDoc doc) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('删除「${doc.title}」？'),
-        content: const Text('PDF 将从设备上删除，无法恢复。'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Ds.danger),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
-    );
-    if (ok == true) {
-      await ref.read(libraryProvider.notifier).delete(doc);
-    }
-  }
-
   Future<void> _batchDelete() async {
     final n = _selected.length;
     final ok = await showDialog<bool>(
@@ -183,9 +163,30 @@ class _DocsPageState extends ConsumerState<DocsPage> {
     ));
   }
 
+  Future<void> _delete(ScanDoc doc) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('删除「${doc.title}」？'),
+        content: const Text('PDF 将从设备上删除，无法恢复。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Ds.danger),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await ref.read(libraryProvider.notifier).delete(doc);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    ref.watch(libraryProvider); // rebuild on library changes
+    ref.watch(libraryProvider);
     final all = _filtered;
     final pageCount = (all.length / _pageSize).ceil().clamp(1, 1 << 20);
     final safePage = _page.clamp(0, pageCount - 1);
@@ -216,7 +217,6 @@ class _DocsPageState extends ConsumerState<DocsPage> {
       ),
       body: Column(
         children: [
-          // ---------- filter bar ----------
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
             child: Row(
@@ -280,9 +280,11 @@ class _DocsPageState extends ConsumerState<DocsPage> {
               ],
             ),
           ),
-          Text('${all.length} 个文档',
-              style: const TextStyle(color: Ds.textDim, fontSize: 11.5)),
-          // ---------- list ----------
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text('${all.length} 个文档',
+                style: const TextStyle(color: Ds.textDim, fontSize: 11.5)),
+          ),
           Expanded(
             child: all.isEmpty
                 ? _empty(context)
@@ -292,33 +294,32 @@ class _DocsPageState extends ConsumerState<DocsPage> {
                     separatorBuilder: (_, __) => const SizedBox(height: 10),
                     itemBuilder: (context, i) {
                       final doc = pageDocs[i];
-                      return _DocCard(
-                        doc: doc,
-                        selecting: _selecting,
-                        selected: _selected.contains(doc),
-                        onTap: () {
-                          if (_selecting) {
-                            setState(() {
-                              _selected.contains(doc) ? _selected.remove(doc) : _selected.add(doc);
-                            });
-                          } else {
-                            _openViewer(doc);
-                          }
-                        },
-                        onLongPress: () => _renameOne(doc),
-                        onDelete: () => _delete(doc),
-                        onShare: () => Share.shareXFiles(
-                          [XFile(doc.pdfFile.path, mimeType: 'application/pdf')],
-                          subject: doc.title,
-                        ),
-                        onPrint: () => Printing.layoutPdf(
-                          onLayout: (format) async => doc.pdfFile.readAsBytes(),
-                        ),
-                      );
-                    },
-                  ),
+                    return _DocCard(
+                      doc: doc,
+                      selecting: _selecting,
+                      selected: _selected.contains(doc),
+                      onTap: () {
+                        if (_selecting) {
+                          setState(() {
+                            _selected.contains(doc) ? _selected.remove(doc) : _selected.add(doc);
+                          });
+                        } else {
+                          _openViewer(doc);
+                        }
+                      },
+                      onLongPress: () => _renameOne(doc),
+                      onDelete: () => _delete(doc),
+                      onShare: () => Share.shareXFiles(
+                        [XFile(doc.pdfFile.path, mimeType: 'application/pdf')],
+                        subject: doc.title,
+                      ),
+                      onPrint: () => Printing.layoutPdf(
+                        onLayout: (format) async => doc.pdfFile.readAsBytes(),
+                      ),
+                    );
+                  },
+                ),
           ),
-          // ---------- pagination ----------
           if (pageCount > 1)
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
@@ -380,8 +381,9 @@ class _DocsPageState extends ConsumerState<DocsPage> {
     );
   }
 
-/// In-app PDF viewer. The printing package's PdfPageable renders pages as
-/// scrollable widgets — no external viewer, no network.
+}
+
+/// In-app PDF viewer: scrollable rendered pages, no external app.
 class _PdfViewerPage extends StatelessWidget {
   const _PdfViewerPage({required this.doc});
 
@@ -406,8 +408,13 @@ class _PdfViewerPage extends StatelessWidget {
           ),
         ],
       ),
-      body: PdfPageable(
-        buildDocument: (format) async => doc.pdfFile.readAsBytes(),
+      body: PdfPreview(
+        build: (format) async => doc.pdfFile.readAsBytes(),
+        allowPrinting: false,
+        canChangePageFormat: false,
+        canChangeOrientation: false,
+        canDebug: false,
+        maxPageWidth: 700,
       ),
     );
   }
