@@ -46,7 +46,7 @@ class _GlassTabBar extends StatelessWidget {
       top: false,
       child: Center(
         child: Padding(
-          padding: const EdgeInsets.only(bottom: 10),
+          padding: const EdgeInsets.only(bottom: 8),
           child: Glass(
             radius: Ds.radius,
             dark: true,
@@ -74,7 +74,7 @@ class _GlassTabBar extends StatelessWidget {
       child: AnimatedContainer(
         duration: Ds.durFast,
         curve: Ds.curve,
-        padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 9),
         decoration: BoxDecoration(
           color: active ? Colors.white.withValues(alpha: 0.16) : Colors.transparent,
           borderRadius: BorderRadius.circular(Ds.radiusSmall),

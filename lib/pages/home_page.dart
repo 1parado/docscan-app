@@ -118,7 +118,7 @@ class _HomePageState extends ConsumerState<HomePage> {
 
             // ---------- Controls (thumb zone, above the tab bar) ----------
             Padding(
-              padding: EdgeInsets.fromLTRB(20, 10, 20, 96 + pad.bottom * 0.2),
+              padding: EdgeInsets.fromLTRB(20, 10, 20, 108 + pad.bottom),
               child: Column(
                 children: [
                   // Mode + auto-crop row
