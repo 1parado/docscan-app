@@ -23,6 +23,8 @@ class _AppShellState extends State<AppShell> {
         index: _tab,
         children: const [HomePage(), DocsPage()],
       ),
+      // extendBody stays true for the glass effect, but pages budget their
+      // own bottom padding (96px) above the bar.
       extendBody: true,
       bottomNavigationBar: _GlassTabBar(
         index: _tab,

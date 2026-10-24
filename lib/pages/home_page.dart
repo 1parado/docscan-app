@@ -10,8 +10,8 @@ import 'adjust_page.dart';
 import 'camera_page.dart';
 import 'result_page.dart';
 
-/// Scan tab: the entry. One big camera card + the working session strip.
-/// Everything lives in the bottom third for thumb reach.
+/// Scan tab: recent docs hero + capture controls in the thumb zone.
+/// Layout budget respects the floating tab bar (~88px + safe area).
 class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
 
@@ -21,19 +21,35 @@ class HomePage extends ConsumerStatefulWidget {
 
 class _HomePageState extends ConsumerState<HomePage> {
   bool _busy = false;
-  String? _flash; // transient status line
+  String? _flash;
+  List<ScanDoc>? _recent;
+
+  @override
+  void initState() {
+    super.initState();
+    _reloadRecent();
+  }
+
+  Future<void> _reloadRecent() async {
+    final docs = await LibraryStore.load();
+    if (mounted) setState(() => _recent = docs);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Coming back from the result page refreshes the library.
+    _reloadRecent();
+  }
 
   Future<void> _shoot() async {
     if (_busy) return;
-    setState(() => _busy = true);
-    try {
-      await Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => const CameraPage(),
-        fullscreenDialog: true,
-      ));
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
+    await Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => const CameraPage(),
+      fullscreenDialog: true,
+    ));
+    _reloadRecent();
+    if (mounted) setState(() {});
   }
 
   Future<void> _pickFromAlbum() async {
@@ -48,12 +64,11 @@ class _HomePageState extends ConsumerState<HomePage> {
         final bytes = await x.readAsBytes();
         final page = await session.processBytes(Uint8List.fromList(bytes));
         session.add(page);
-        if (mounted) {
-          setState(() => _flash = page.cropStatus == 'not_found'
-              ? '未检测到边缘，已按原图处理'
-              : null);
+        if (mounted && page.cropStatus == 'not_found') {
+          setState(() => _flash = '有照片未检测到边缘，可在缩略图上手动裁剪');
         }
       }
+      if (mounted) _openResult(context);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -63,6 +78,8 @@ class _HomePageState extends ConsumerState<HomePage> {
   Widget build(BuildContext context) {
     final pages = ref.watch(sessionProvider);
     final session = ref.read(sessionProvider.notifier);
+    final recent = _recent ?? [];
+    final pad = MediaQuery.of(context).padding;
 
     return Scaffold(
       body: SafeArea(
@@ -70,120 +87,103 @@ class _HomePageState extends ConsumerState<HomePage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // ---------- Header ----------
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+              child: Row(
+                children: [
+                  Container(
+                    width: 34, height: 34,
+                    decoration: BoxDecoration(
+                      color: Ds.clover,
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: const Icon(Icons.document_scanner, color: Colors.white, size: 18),
+                  ),
+                  const SizedBox(width: 10),
+                  const Text('DocScan',
+                      style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700, letterSpacing: -0.3)),
+                  const Spacer(),
+                  // Mode chips inline in the header: compact, no separate row
+                ],
+              ),
+            ),
+
+            // ---------- Recent strip (has content? show it : show intro) ----------
+            Expanded(
+              child: pages.isNotEmpty
+                  ? _SessionView(pages: pages, flash: _flash)
+                  : _IdleView(recent: recent),
+            ),
+
+            // ---------- Controls (thumb zone, above the tab bar) ----------
+            Padding(
+              padding: EdgeInsets.fromLTRB(20, 10, 20, 96 + pad.bottom * 0.2),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('DocScan', style: Theme.of(context).appBarTheme.titleTextStyle!.copyWith(
-                        fontSize: 22, fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 2),
-                  Text('离线扫描 · 透视校正 · 导出 PDF',
-                      style: TextStyle(color: Ds.textDim, fontSize: 13)),
-                ],
-              ),
-            ),
-            const Spacer(),
-            // Working session strip
-            if (pages.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(left: 20, bottom: 10),
-                child: Row(
-                  children: [
-                    Text('已拍 ${pages.length} 页',
-                        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                    if (_flash != null)
-                      Padding(
-                        padding: const EdgeInsets.only(left: 10),
-                        child: Text(_flash!, style: const TextStyle(color: Ds.danger, fontSize: 12.5)),
-                      ),
-                    const Spacer(),
-                    TextButton(
-                      onPressed: pages.isEmpty ? null : () => _openResult(context),
-                      child: const Text('下一步'),
-                    ),
-                    TextButton(
-                      onPressed: () => session.clear(),
-                      child: Text('清空', style: TextStyle(color: Ds.textDim)),
-                    ),
-                  ],
-                ),
-              ),
-            if (pages.isNotEmpty)
-              SizedBox(
-                height: 120,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  itemCount: pages.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
-                  itemBuilder: (context, i) => _PageThumb(index: i),
-                ),
-              ),
-            // Controls
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: _ModeSwitch(session: session),
-                  ),
-                ],
-              ),
-            ),
-            Padding(
-              padding: EdgeInsets.fromLTRB(20, 14, 20, 24 + MediaQuery.of(context).padding.bottom * 0.4),
-              child: Row(
-                children: [
-                  Expanded(
-                    flex: 3,
-                    child: GestureDetector(
-                      onTap: _shoot,
-                      child: Container(
-                        height: 92,
-                        decoration: BoxDecoration(
-                          color: Ds.clover,
-                          borderRadius: BorderRadius.circular(Ds.radius),
-                          boxShadow: [BoxShadow(color: Ds.clover.withValues(alpha: 0.28), blurRadius: 24, offset: const Offset(0, 8))],
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            _busy
-                                ? const SizedBox(
-                                    width: 20, height: 20,
-                                    child: CircularProgressIndicator(strokeWidth: 2.4, color: Colors.white))
-                                : const Icon(Icons.photo_camera_outlined, color: Colors.white),
-                            const SizedBox(width: 10),
-                            Text(_busy ? '处理中…' : '拍摄',
-                                style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w600)),
-                          ],
+                  // Mode + auto-crop row
+                  _ModeSwitch(session: session),
+                  const SizedBox(height: 12),
+                  // Capture row
+                  Row(
+                    children: [
+                      Expanded(
+                        flex: 3,
+                        child: GestureDetector(
+                          onTap: _shoot,
+                          child: Container(
+                            height: 64,
+                            decoration: BoxDecoration(
+                              color: Ds.clover,
+                              borderRadius: BorderRadius.circular(18),
+                              boxShadow: [BoxShadow(
+                                  color: Ds.clover.withValues(alpha: 0.3),
+                                  blurRadius: 20, offset: const Offset(0, 6))],
+                            ),
+                            child: Center(
+                              child: _busy
+                                  ? const SizedBox(
+                                      width: 20, height: 20,
+                                      child: CircularProgressIndicator(strokeWidth: 2.4, color: Colors.white))
+                                  : const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.photo_camera_outlined, color: Colors.white, size: 21),
+                                        SizedBox(width: 9),
+                                        Text('拍摄',
+                                            style: TextStyle(color: Colors.white, fontSize: 16.5, fontWeight: FontWeight.w600)),
+                                      ],
+                                    ),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    flex: 2,
-                    child: GestureDetector(
-                      onTap: _pickFromAlbum,
-                      child: Container(
-                        height: 92,
-                        decoration: BoxDecoration(
-                          color: Ds.glassFill,
-                          borderRadius: BorderRadius.circular(Ds.radius),
-                          border: Border.all(color: Ds.stroke, width: 0.8),
-                        ),
-                        child: const Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.photo_library_outlined, color: Ds.text),
-                            SizedBox(width: 8),
-                            Text('相册', style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w500)),
-                          ],
+                      const SizedBox(width: 10),
+                      Expanded(
+                        flex: 2,
+                        child: GestureDetector(
+                          onTap: _pickFromAlbum,
+                          child: Container(
+                            height: 64,
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+                            ),
+                            child: const Center(
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.photo_library_outlined, color: Ds.text, size: 20),
+                                  SizedBox(width: 8),
+                                  Text('相册', style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w500)),
+                                ],
+                              ),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
+                    ],
                   ),
                 ],
               ),
@@ -196,7 +196,147 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   Future<void> _openResult(BuildContext context) async {
     await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ResultPage()));
+    _reloadRecent();
     if (mounted) setState(() => _flash = null);
+  }
+}
+
+/// Empty / idle state: value line + recent docs preview.
+class _IdleView extends StatelessWidget {
+  const _IdleView({required this.recent});
+
+  final List<ScanDoc> recent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Spacer(),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('把镜头对准文档',
+                  style: TextStyle(fontSize: 26, fontWeight: FontWeight.w700, color: Ds.text, letterSpacing: -0.5)),
+              const SizedBox(height: 6),
+              Text('自动找边 · 透视校正 · 去阴影\n全程离线，照片不离开手机',
+                  style: TextStyle(fontSize: 14, height: 1.6, color: Ds.textDim)),
+            ],
+          ),
+        ),
+        if (recent.isNotEmpty) ...[
+          const Spacer(),
+          Padding(
+            padding: const EdgeInsets.only(left: 20, bottom: 10),
+            child: Text('最近的文档',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Ds.textDim)),
+          ),
+          SizedBox(
+            height: 108,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              itemCount: recent.length.clamp(0, 6),
+              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              itemBuilder: (context, i) {
+                final doc = recent[i];
+                return ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: SizedBox(
+                    width: 82,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        doc.firstPageImage.existsSync()
+                            ? Image.file(doc.firstPageImage, fit: BoxFit.cover)
+                            : const ColoredBox(color: Ds.frost),
+                        // bottom scrim + label
+                        Positioned(
+                          left: 0, right: 0, bottom: 0,
+                          child: Container(
+                            padding: const EdgeInsets.all(5),
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter,
+                                  colors: [Colors.transparent, Colors.black.withValues(alpha: 0.55)]),
+                            ),
+                            child: Text(doc.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: Colors.white, fontSize: 9)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ] else
+          const Spacer(flex: 2),
+      ],
+    );
+  }
+}
+
+/// Active session view: page thumbnails + clear/next actions.
+class _SessionView extends ConsumerWidget {
+  const _SessionView({required this.pages, required this.flash});
+
+  final List<ScanPage> pages;
+  final String? flash;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final session = ref.read(sessionProvider.notifier);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Spacer(),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+          child: Row(
+            children: [
+              Text('已拍 ${pages.length} 页',
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              if (flash != null)
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 10),
+                    child: Text(flash!,
+                        maxLines: 1, overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Ds.danger, fontSize: 12)),
+                  ),
+                ),
+              const Spacer(),
+              TextButton(
+                onPressed: () => session.clear(),
+                child: Text('清空', style: TextStyle(color: Ds.textDim, fontSize: 13.5)),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: Ds.clover,
+                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                ),
+                onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const ResultPage())),
+                child: const Text('下一步'),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(
+          height: 128,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            itemCount: pages.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 8),
+            itemBuilder: (context, i) => _PageThumb(index: i),
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -208,9 +348,13 @@ class _ModeSwitch extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final mode = ref.watch(sessionProvider.notifier).mode;
-    return Glass(
-      radius: Ds.radiusSmall,
+    return Container(
       padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.black.withValues(alpha: 0.06)),
+      ),
       child: Row(
         children: [
           for (final m in ScanModeSetting.values)
@@ -222,11 +366,8 @@ class _ModeSwitch extends ConsumerWidget {
                   curve: Ds.curve,
                   padding: const EdgeInsets.symmetric(vertical: 9),
                   decoration: BoxDecoration(
-                    color: mode == m ? Colors.white : Colors.transparent,
-                    borderRadius: BorderRadius.circular(10),
-                    boxShadow: mode == m
-                        ? [BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 6, offset: const Offset(0, 2))]
-                        : null,
+                    color: mode == m ? Ds.clover.withValues(alpha: 0.1) : Colors.transparent,
+                    borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
                     switch (m) { ScanModeSetting.color => '彩色', ScanModeSetting.gray => '灰度', ScanModeSetting.bw => '黑白' },
@@ -234,21 +375,21 @@ class _ModeSwitch extends ConsumerWidget {
                     style: TextStyle(
                       fontSize: 13.5,
                       fontWeight: mode == m ? FontWeight.w600 : FontWeight.w400,
-                      color: mode == m ? Ds.cloverDim : Ds.textDim,
+                      color: mode == m ? Ds.clover : Ds.textDim,
                     ),
                   ),
                 ),
               ),
             ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 2),
           GestureDetector(
             onTap: () => session.setAutoCrop(!session.autoCrop),
             child: AnimatedContainer(
               duration: Ds.durFast,
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
               decoration: BoxDecoration(
-                color: session.autoCrop ? Ds.clover.withValues(alpha: 0.12) : Colors.transparent,
-                borderRadius: BorderRadius.circular(10),
+                color: session.autoCrop ? Ds.clover.withValues(alpha: 0.1) : Colors.transparent,
+                borderRadius: BorderRadius.circular(12),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
@@ -256,7 +397,7 @@ class _ModeSwitch extends ConsumerWidget {
                   Icon(Icons.crop_free, size: 15,
                       color: session.autoCrop ? Ds.clover : Ds.textDim),
                   const SizedBox(width: 5),
-                  Text('智能裁边', style: TextStyle(
+                  Text('裁边', style: TextStyle(
                       fontSize: 12.5,
                       fontWeight: FontWeight.w500,
                       color: session.autoCrop ? Ds.clover : Ds.textDim)),
@@ -281,55 +422,46 @@ class _PageThumb extends ConsumerWidget {
     final page = pages[index];
     final session = ref.read(sessionProvider.notifier);
 
-    return Dismissible(
-      key: ValueKey(page.name),
-      direction: DismissDirection.up,
-      onDismissed: (_) => session.removeAt(index),
-      background: const ColoredBox(color: Colors.transparent),
+    return GestureDetector(
+      onTap: () async {
+        final updated = await Navigator.of(context).push<List<List<double>>?>(
+          MaterialPageRoute(builder: (_) => AdjustPage(pageIndex: index)),
+        );
+        if (updated != null) {
+          final p = pages[index];
+          final bytes = await p.file.readAsBytes();
+          final newPage = await session.processBytes(bytes, manualCorners: updated);
+          session.removeAt(index);
+          session.add(newPage);
+        }
+      },
       child: Stack(
         children: [
           ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: Image.file(page.file, width: 84, height: 112, fit: BoxFit.cover),
+            borderRadius: BorderRadius.circular(12),
+            child: Image.file(page.file, width: 88, height: 120, fit: BoxFit.cover),
           ),
           Positioned(
-            left: 4, top: 4,
+            left: 5, top: 5,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
               decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.62),
+                color: Colors.black.withValues(alpha: 0.6),
                 borderRadius: BorderRadius.circular(99),
               ),
               child: Text('${index + 1}',
                   style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w600)),
             ),
           ),
-          // Manual crop entry
           Positioned(
             right: 4, top: 4,
-            child: GestureDetector(
-              onTap: () async {
-                final updated = await Navigator.of(context).push<List<List<double>>?>(
-                  MaterialPageRoute(builder: (_) => AdjustPage(pageIndex: index)),
-                );
-                if (updated != null) {
-                  final p = pages[index];
-                  final newPage = await session.processBytes(
-                    await p.file.readAsBytes(),
-                    manualCorners: updated,
-                  );
-                  session.removeAt(index);
-                  session.add(newPage);
-                }
-              },
-              child: Container(
-                width: 22, height: 22,
-                decoration: BoxDecoration(
-                  color: page.manualCorners != null ? Ds.clover : Colors.black.withValues(alpha: 0.62),
-                  borderRadius: BorderRadius.circular(99),
-                ),
-                child: const Icon(Icons.crop, size: 13, color: Colors.white),
+            child: Container(
+              width: 24, height: 24,
+              decoration: BoxDecoration(
+                color: page.manualCorners != null ? Ds.clover : Colors.black.withValues(alpha: 0.6),
+                shape: BoxShape.circle,
               ),
+              child: const Icon(Icons.crop, size: 13, color: Colors.white),
             ),
           ),
         ],
