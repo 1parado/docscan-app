@@ -118,7 +118,7 @@ class _HomePageState extends ConsumerState<HomePage> {
 
             // ---------- Controls (thumb zone, above the tab bar) ----------
             Padding(
-              padding: EdgeInsets.fromLTRB(20, 10, 20, 108 + pad.bottom),
+              padding: EdgeInsets.fromLTRB(20, 10, 20, 24 + pad.bottom * 0.4),
               child: Column(
                 children: [
                   // Mode + auto-crop row
@@ -201,7 +201,7 @@ class _HomePageState extends ConsumerState<HomePage> {
   }
 }
 
-/// Empty / idle state: value line + recent docs preview.
+/// Empty / idle state: quiet hint + recent docs preview.
 class _IdleView extends StatelessWidget {
   const _IdleView({required this.recent});
 
@@ -212,22 +212,14 @@ class _IdleView extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Spacer(),
+        const SizedBox(height: 48),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('把镜头对准文档',
-                  style: TextStyle(fontSize: 26, fontWeight: FontWeight.w700, color: Ds.text, letterSpacing: -0.5)),
-              const SizedBox(height: 6),
-              Text('自动找边 · 透视校正 · 去阴影\n全程离线，照片不离开手机',
-                  style: TextStyle(fontSize: 14, height: 1.6, color: Ds.textDim)),
-            ],
-          ),
+          child: Text('拍摄文档开始扫描',
+              style: TextStyle(fontSize: 21, fontWeight: FontWeight.w700, color: Ds.text, letterSpacing: -0.4)),
         ),
         if (recent.isNotEmpty) ...[
-          const Spacer(),
+          const SizedBox(height: 24),
           Padding(
             padding: const EdgeInsets.only(left: 20, bottom: 10),
             child: Text('最近的文档',
@@ -252,7 +244,6 @@ class _IdleView extends StatelessWidget {
                         doc.firstPageImage.existsSync()
                             ? Image.file(doc.firstPageImage, fit: BoxFit.cover)
                             : const ColoredBox(color: Ds.frost),
-                        // bottom scrim + label
                         Positioned(
                           left: 0, right: 0, bottom: 0,
                           child: Container(
@@ -272,8 +263,7 @@ class _IdleView extends StatelessWidget {
               },
             ),
           ),
-        ] else
-          const Spacer(flex: 2),
+        ],
       ],
     );
   }
