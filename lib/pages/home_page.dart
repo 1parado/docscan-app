@@ -115,13 +115,10 @@ class _HomePageState extends ConsumerState<HomePage> {
                     child: GestureDetector(
                       onTap: _shoot,
                       child: Container(
-                        height: 64,
+                        height: 58,
                         decoration: BoxDecoration(
                           color: Ds.clover,
-                          borderRadius: BorderRadius.circular(18),
-                          boxShadow: [BoxShadow(
-                              color: Ds.clover.withValues(alpha: 0.3),
-                              blurRadius: 20, offset: const Offset(0, 6))],
+                          borderRadius: BorderRadius.circular(29),
                         ),
                         child: Center(
                           child: _busy
@@ -147,19 +144,19 @@ class _HomePageState extends ConsumerState<HomePage> {
                     child: GestureDetector(
                       onTap: _pickFromAlbum,
                       child: Container(
-                        height: 64,
+                        height: 58,
                         decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(18),
-                          border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+                          color: Colors.transparent,
+                          borderRadius: BorderRadius.circular(29),
+                          border: Border.all(color: Ds.clover.withValues(alpha: 0.45), width: 1.4),
                         ),
                         child: const Center(
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.photo_library_outlined, color: Ds.text, size: 20),
+                              Icon(Icons.photo_library_outlined, color: Ds.clover, size: 20),
                               SizedBox(width: 8),
-                              Text('相册', style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w500)),
+                              Text('相册', style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w500, color: Ds.clover)),
                             ],
                           ),
                         ),
@@ -200,18 +197,23 @@ class _IdleView extends StatelessWidget {
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Ds.textDim)),
           ),
           SizedBox(
-            height: 108,
+            height: 128,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 20),
               itemCount: recent.length.clamp(0, 6),
-              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              separatorBuilder: (_, __) => const SizedBox(width: 16),
               itemBuilder: (context, i) {
                 final doc = recent[i];
-                return ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: SizedBox(
-                    width: 82,
+                return Container(
+                  width: 96,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: Colors.black.withValues(alpha: 0.05)),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(14),
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
@@ -221,13 +223,13 @@ class _IdleView extends StatelessWidget {
                         Positioned(
                           left: 0, right: 0, bottom: 0,
                           child: Container(
-                            padding: const EdgeInsets.all(5),
+                            padding: const EdgeInsets.all(6),
                             decoration: BoxDecoration(
                               gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                                  colors: [Colors.transparent, Colors.black.withValues(alpha: 0.55)]),
+                                  colors: [Colors.transparent, Colors.black.withValues(alpha: 0.5)]),
                             ),
                             child: Text(doc.title, maxLines: 1, overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(color: Colors.white, fontSize: 9)),
+                                style: const TextStyle(color: Colors.white, fontSize: 9.5)),
                           ),
                         ),
                       ],
@@ -402,8 +404,8 @@ class _PageThumb extends ConsumerWidget {
       child: Stack(
         children: [
           ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Image.file(page.file, width: 88, height: 120, fit: BoxFit.cover),
+            borderRadius: BorderRadius.circular(14),
+            child: Image.file(page.file, width: 92, height: 124, fit: BoxFit.cover),
           ),
           Positioned(
             left: 5, top: 5,
