@@ -44,3 +44,9 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 *.iml
+
+# ADB test harness output: per-run screenshots + reports contain the device
+# serial and real document titles, so they are run artifacts, never source.
+/android_test/reports/
+/android_test/fixtures/
+/android_test/.device-lock

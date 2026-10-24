@@ -137,4 +137,30 @@ function colorShare(img, targetHex, tol = 26) {
   return n ? hit / n : 0;
 }
 
-module.exports = { read, decode, stats, colorShare, toRgba, hex };
+/**
+ * Fraction of sampled pixels in `region` that changed between two shots.
+ * Lets a suite prove a control did something without hard-coding the colour
+ * or glyph the current design happens to use.
+ */
+function diffRatio(before, after, region) {
+  const a = toRgba(before);
+  const b = toRgba(after);
+  if (a.width !== b.width || a.height !== b.height) throw new Error('diff: size mismatch');
+  const r = region ?? { x1: 0, y1: 0, x2: a.width, y2: a.height };
+  let changed = 0;
+  let n = 0;
+  for (let y = r.y1; y < r.y2; y += 2) {
+    for (let x = r.x1; x < r.x2; x += 2) {
+      const i = (y * a.width + x) * 4;
+      n++;
+      if (
+        Math.abs(a.data[i] - b.data[i]) > 6 ||
+        Math.abs(a.data[i + 1] - b.data[i + 1]) > 6 ||
+        Math.abs(a.data[i + 2] - b.data[i + 2]) > 6
+      ) changed++;
+    }
+  }
+  return n ? changed / n : 0;
+}
+
+module.exports = { read, decode, stats, colorShare, diffRatio, toRgba, hex };

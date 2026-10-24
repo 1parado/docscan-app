@@ -90,6 +90,28 @@ const screenSize = () => {
 
 const forceStop = () => adb(['shell', 'am', 'force-stop', PKG]);
 
+/**
+ * Put the device back into a state where `launch()` actually starts the app.
+ *
+ * A picker opened from our task and never dismissed stays stacked *inside* that
+ * task, so `am start` re-raises the picker, MainActivity never resumes, and the
+ * process goes away — which reads as "app crashed" if you don't clear it first.
+ */
+function resetToApp() {
+  forceStop();
+  for (let i = 0; i < 6 && /documentsui|mediapicker|photo/i.test(foregroundPackage()); i++) {
+    back();
+    sleep(700);
+  }
+  homeKey();
+  sleep(600);
+  // Leave the app in the foreground: on this ROM uiautomator cannot dump the
+  // launcher at all, so ending on the home screen would look like a dead app.
+  launch();
+  for (let i = 0; i < 12 && !isForeground(); i++) sleep(500);
+  sleep(1500);
+}
+
 /** Cold start. Returns the measured start-up cost in ms from both sources. */
 function launch() {
   const out = adb(['shell', 'am', 'start', '-W', '-n', ACTIVITY]);
@@ -109,8 +131,19 @@ const currentFocus = () =>
 
 const isForeground = () => currentFocus().startsWith(PKG);
 
+/** Package that currently owns the window — the system picker is not ours. */
+const foregroundPackage = () => currentFocus().split('/')[0];
+
+const inPicker = () => isForeground() === false && foregroundPackage() !== '';
+
 const pidof = () => {
-  const p = adb(['shell', 'pidof', PKG]).trim();
+  let p;
+  try {
+    // `pidof` exits 1 when the process is gone, which is an answer, not an error.
+    p = adb(['shell', 'pidof', PKG]).trim();
+  } catch (_) {
+    return null;
+  }
   return p ? Number(p.split(/\s+/)[0]) : null;
 };
 
@@ -160,23 +193,33 @@ const BINARY_DUMP = '/sdcard/docscan_ui.xml';
 
 /**
  * Dump the semantics tree. Retries because uiautomator refuses to dump while
- * the window is still animating, which is routine right after a transition.
+ * the window is still animating, which is routine right after a transition, and
+ * because it is single-instance on the device: an instrumentation left behind by
+ * an interrupted run makes the next dump exit 137 (killed), so the wait between
+ * attempts grows rather than staying flat.
+ *
+ * A failed dump throws instead of returning an empty list — an empty tree makes
+ * "is this label absent?" assertions pass for the wrong reason.
  */
-function dump({ retries = 4 } = {}) {
+function dump({ retries = 6 } = {}) {
+  let lastErr = null;
   for (let i = 0; i < retries; i++) {
     adb(['shell', 'rm', '-f', BINARY_DUMP]);
-    const out = adb(['shell', 'uiautomator', 'dump', BINARY_DUMP]);
-    if (out.includes('dumped to')) {
-      try {
+    try {
+      const out = adb(['shell', 'uiautomator', 'dump', BINARY_DUMP]);
+      if (out.includes('dumped to')) {
         const xml = adb(['shell', 'cat', BINARY_DUMP]);
         if (xml.includes('<node')) return parseNodes(xml);
-      } catch (_) {
-        /* transient */
+        lastErr = new Error('dump produced no node tree');
+      } else {
+        lastErr = new Error(`uiautomator refused: ${out.trim() || 'no output'}`);
       }
+    } catch (err) {
+      lastErr = err;
     }
-    sleep(400);
+    sleep(400 * (i + 1));
   }
-  return [];
+  throw new Error(`uiautomator dump failed after ${retries} tries: ${lastErr && lastErr.message}`);
 }
 
 const visibleLabels = () =>
@@ -234,12 +277,22 @@ function swipeIn(node, dir = 1, ms = 260) {
   swipe(cx - (dir > 0 ? -span / 2 : span / 2), y, cx + (dir > 0 ? span / 2 : -span / 2), y, ms);
 }
 
+/** Scroll a whole screen vertically — list rows live below the fold. */
+function scrollScreen(dir = 'up', ms = 320) {
+  const { w, h } = screenSize();
+  const from = Math.round(h * (dir === 'up' ? 0.7 : 0.35));
+  const to = Math.round(h * (dir === 'up' ? 0.32 : 0.7));
+  swipe(Math.round(w / 2), from, Math.round(w / 2), to, ms);
+}
+
 /** `adb shell input text` cannot emit CJK; suites use it for ASCII names. */
 function typeText(text) {
   adb(['shell', 'input', 'text', text.replace(/ /g, '%s')]);
 }
 
-const clearField = (times = 40) => {
+/** Move to end of the field then backspace, i.e. clear what the app prefilled. */
+const clearField = (times = 60) => {
+  adb(['shell', 'input', 'keyevent', 'KEYCODE_MOVE_END']);
   for (let i = 0; i < times; i++) adb(['shell', 'input', 'keyevent', '67']);
 };
 
@@ -259,6 +312,16 @@ function waitFor(label, { timeoutMs = 8000, absent = false } = {}) {
     `waitFor${absent ? ' absent' : ''}: "${label}" ${absent ? 'still present' : 'not found'} after ${timeoutMs}ms. ` +
       `visible: [${nodes.map((n) => n.desc || n.text).filter(Boolean).join(' | ')}]`
   );
+}
+
+/** Non-throwing form of waitFor, for steps where absence is a real outcome. */
+function tryWait(label, { timeoutMs = 8000, absent = false } = {}) {
+  try {
+    waitFor(label, { timeoutMs, absent });
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 /** `adb exec-out screencap -p` emits PNG bytes, so it bypasses utf8 decoding. */
@@ -325,13 +388,26 @@ const meminfo = () => {
 };
 
 const grantAllPermissions = () => {
+  const granted = [];
   for (const p of ['android.permission.CAMERA', 'android.permission.READ_MEDIA_IMAGES', 'android.permission.READ_EXTERNAL_STORAGE']) {
-    adb(['shell', 'pm', 'grant', PKG, p]);
+    try {
+      adb(['shell', 'pm', 'grant', PKG, p]);
+      granted.push(p.split('.').pop());
+    } catch (_) {
+      /* some ROMs refuse a permission the app does not declare */
+    }
   }
+  return granted;
 };
 
 const revokePermissions = (list = ['android.permission.CAMERA']) => {
-  for (const p of list) adb(['shell', 'pm', 'revoke', PKG, p]);
+  for (const p of list) {
+    try {
+      adb(['shell', 'pm', 'revoke', PKG, p]);
+    } catch (_) {
+      /* already revoked */
+    }
+  }
 };
 
 const clearAppData = () => adb(['shell', 'pm', 'clear', PKG]);
@@ -360,9 +436,12 @@ module.exports = {
   screenSize,
   assertDevice,
   forceStop,
+  resetToApp,
   launch,
   currentFocus,
   isForeground,
+  foregroundPackage,
+  inPicker,
   pidof,
   waitProcessGone,
   dump,
@@ -370,6 +449,7 @@ module.exports = {
   find,
   findIndex,
   waitFor,
+  tryWait,
   tap,
   tapPoint,
   longPress,
@@ -377,6 +457,7 @@ module.exports = {
   homeKey,
   swipe,
   swipeIn,
+  scrollScreen,
   typeText,
   clearField,
   screenshot,

@@ -1,0 +1,408 @@
+/**
+ * System test: does every advertised flow actually work on a real phone?
+ *
+ * Covers navigation, the capture controls, the album import path, cropping,
+ * export and the whole Docs tab. The camera is exercised as far as the
+ * viewfinder because nobody is holding paper over the lens; the album path runs
+ * the same pipeline and is what a repeatable suite can drive.
+ *
+ * Control state is verified by pixel change inside the control's own bounds,
+ * not by a hard-coded colour, so a redesign does not automatically mean a false
+ * failure.
+ */
+'use strict';
+
+const d = require('../driver.cjs');
+const UI = require('../ui.cjs');
+const f = require('../flows.cjs');
+const P = require('../picker.cjs');
+const png = require('../png.cjs');
+const setup = require('../setup.cjs');
+const { Suite, must } = require('../harness.cjs');
+
+const bandOf = (chip) => ({
+  x1: Math.max(0, chip.bounds.x1 - 80),
+  y1: Math.max(0, chip.bounds.y1 - 8),
+  x2: Math.min(chip.bounds.x2 + 140, 10000),
+  y2: chip.bounds.y2 + 8,
+});
+
+module.exports = function system() {
+  const s = new Suite('system');
+  const modeRefs = {};
+  let band = null;
+  let pickerBlocked = null;
+
+  /** Everything after the first album import depends on the picker working. */
+  const gated = (title, fn) =>
+    s.test(title, () => {
+      if (pickerBlocked) return s.skip(`blocked earlier: ${pickerBlocked}`);
+      try {
+        return fn();
+      } catch (e) {
+        if (/picker|stage/.test(String(e.message))) pickerBlocked = String(e.message);
+        throw e;
+      }
+    });
+
+  s.test('preflight: fixtures generated and pushed', () => {
+    let files = setup.listFixtures();
+    if (files.length === 0) files = setup.generateFixtures(6);
+    must(files.length >= 2, `only ${files.length} fixtures generated`);
+    const pushed = setup.pushFixtures(files);
+    return `${pushed} fixtures in ${setup.REMOTE_DIR}`;
+  });
+
+  s.test('tabs switch between 扫描 and 文档', () => {
+    f.openScan();
+    must(UI.onScreen(d.dump()) === 'home', 'scan tab is not the home screen');
+    f.openDocs();
+    must(UI.onScreen(d.dump()) === 'docs', 'docs tab did not render the library');
+    f.openScan();
+    return 'both tabs reachable';
+  });
+
+  s.test('empty session offers no export path', () => {
+    f.home();
+    if (f.sessionCount() != null) f.clearSession();
+    const nodes = d.dump();
+    must(!nodes.some((n) => (n.desc || '').includes(UI.HOME.next)), '"下一步" is offered with zero pages');
+    return 'no 下一步 without pages';
+  });
+
+  for (const mode of ['color', 'gray', 'bw']) {
+    s.test(`mode chip "${UI.HOME.modes[mode]}" responds`, () => {
+      f.home();
+      // Tapping the chip that is already selected is a no-op by design, so
+      // start from a different mode: only then does "it responded" mean
+      // something. Whichever of the two is active, the tested tap changes it.
+      const other = mode === 'gray' ? 'color' : 'gray';
+      f.setMode(other);
+      d.sleep(600);
+      const chip = d.waitFor(UI.HOME.modes[mode]);
+      band = bandOf(chip);
+      const before = s.shot(`before_mode_${mode}`);
+      d.tapPoint(chip.center.x, chip.center.y);
+      d.sleep(700);
+      const after = s.shot(`after_mode_${mode}`);
+      const change = png.diffRatio(png.read(before), png.read(after), band);
+      must(change > 0.005, `tapping "${UI.HOME.modes[mode]}" from "${UI.HOME.modes[other]}" changed ${(change * 100).toFixed(1)}% of its band`);
+      modeRefs[mode] = after;
+      return `band changed ${(change * 100).toFixed(1)}%`;
+    });
+  }
+
+  s.test('auto-crop toggle repaints', () => {
+    f.home();
+    const chip = d.waitFor(UI.HOME.autoCrop);
+    const before = s.shot('before_autocrop');
+    d.tapPoint(chip.center.x, chip.center.y);
+    d.sleep(700);
+    const after = s.shot('after_autocrop');
+    const change = png.diffRatio(png.read(before), png.read(after), bandOf(chip));
+    must(change > 0.005, `"${UI.HOME.autoCrop}" did not visibly change (${(change * 100).toFixed(1)}%)`);
+    d.tapPoint(chip.center.x, chip.center.y);
+    d.sleep(400);
+    return 'toggle repaints';
+  });
+
+  gated('album import produces a session', () => {
+    f.home();
+    if (f.sessionCount() != null) f.clearSession();
+    const r = f.importPages(1);
+    if (!r.ok) throw new Error(`picker failed at stage "${r.stage}": ${JSON.stringify(r.detail)}`);
+    must(r.pages >= 1, `session shows ${r.pages} pages after importing 1 photo`);
+    s.shot('session_1p');
+    return `session has ${r.pages} page(s)`;
+  });
+
+  gated('multi-page import accumulates pages', () => {
+    f.home();
+    f.clearSession();
+    const r = f.importPages(3);
+    if (!r.ok) throw new Error(`picker failed at stage "${r.stage}": ${JSON.stringify(r.detail)}`);
+    must(r.pages === 3, `asked for 3 pages, session shows ${r.pages}`);
+    const strip = d.waitFor(UI.HOME.sessionPrefix);
+    d.swipe(strip.bounds.x2 - 60, strip.center.y + 130, strip.bounds.x1 + 60, strip.center.y + 130, 250);
+    d.sleep(600);
+    s.shot('session_strip_scrolled');
+    return '3 pages in the strip';
+  });
+
+  gated('clear wipes the session', () => {
+    f.home();
+    must(f.sessionCount() != null, 'nothing to clear — the earlier import did not stick');
+    must(f.clearSession(), '清空 did not empty the session');
+    return 'session cleared';
+  });
+
+  // The app opens the export screen on its own after an album import. When a
+  // photo has no detectable edge that jump hides the message telling the user to
+  // crop it, so the import must stay on the session view instead.
+  gated('undetectable page keeps the crop warning on screen', () => {
+    f.home();
+    if (f.sessionCount() != null) f.clearSession();
+    const r = P.takeOne(/nodoc/, { album: UI.HOME.album, settleMs: 120000 });
+    if (!r.ok) throw new Error(`picker failed at stage "${r.stage}": ${JSON.stringify(r.detail)}`);
+    const screen = UI.onScreen(d.dump());
+    must(screen !== 'result', `the app jumped to the export screen; ${UI.HOME.cropWarning} is unreadable there`);
+    const hit = d.find(UI.HOME.cropWarning) || (d.sleep(1500), d.find(UI.HOME.cropWarning));
+    must(hit, `no crop warning shown — visible: ${d.visibleLabels().join(' | ')}`);
+    s.shot('crop_warning');
+    f.clearSession();
+    return `warning kept on "${screen}"`;
+  });
+
+  gated('page thumbnail opens the crop editor and cancels back', () => {
+    f.home();
+    const r = f.importPages(1);
+    if (!r.ok) throw new Error(`picker failed at stage "${r.stage}"`);
+    must(f.tapSessionThumb(0) != null, 'page badge "1" not found in the session strip');
+    d.sleep(1600);
+    const nodes = d.dump();
+    s.shot('adjust');
+    const screen = UI.onScreen(nodes);
+    must(screen === 'adjust', `tapping a thumbnail opened "${screen}", expected the crop editor`);
+    d.tap(UI.ADJUST.cancel);
+    d.sleep(1000);
+    must(UI.onScreen(d.dump()) === 'home', 'cancel did not return to the session');
+    return 'crop editor opens and cancels';
+  });
+
+  gated('export saves the doc and empties the session', () => {
+    f.home();
+    if (f.sessionCount() == null) {
+      const r = f.importPages(2);
+      if (!r.ok) throw new Error(`picker failed at stage "${r.stage}"`);
+    }
+    f.openDocs();
+    const before = f.docCount();
+    f.openScan();
+    const out = f.exportDoc('qa-export-01');
+    must(out.count > before, `library ${before} -> ${out.count}`);
+    f.home();
+    must(f.sessionCount() == null, 'session still holds pages after export');
+    return `library ${before} -> ${out.count}`;
+  });
+
+  gated('exported doc is listed in the library', () => {
+    f.openDocs();
+    const hit = d.dump().find((n) => (n.desc || '').includes('qa-export-01'));
+    must(hit, '"qa-export-01" is not listed');
+    s.shot('docs_after_export');
+    return hit.desc;
+  });
+
+  gated('long-press renames a document', () => {
+    f.openDocs();
+    const card = d.dump().find((n) => (n.desc || '').includes('qa-export-01'));
+    must(card, 'the doc under rename vanished');
+    d.longPress('qa-export-01');
+    d.sleep(1500);
+    let nodes = d.dump();
+    must(nodes.some((n) => (n.desc || '').includes(UI.DOCS.renameSheet)), 'rename sheet did not open');
+    s.shot('rename_sheet');
+    const field = nodes.find((n) => /EditText/i.test(n.class));
+    must(field, 'rename sheet has no text field');
+    d.tapPoint(field.center.x, field.center.y);
+    d.sleep(600);
+    d.clearField(60);
+    d.typeText('qa-renamed-01');
+    d.sleep(400);
+    nodes = d.dump();
+    const save = nodes.find((n) => /保存|SAVE/.test(n.desc || n.text));
+    must(save, 'rename sheet has no save button');
+    d.tapPoint(save.center.x, save.center.y);
+    d.sleep(2000);
+    must(d.dump().some((n) => (n.desc || '').includes('qa-renamed-01')), 'rename did not take effect');
+    d.back();
+    return 'renamed and persisted';
+  });
+
+  gated('name filter narrows the list', () => {
+    f.openDocs();
+    const field = d.dump().find((n) => /EditText/i.test(n.class));
+    must(field, 'filter field not found');
+    d.tapPoint(field.center.x, field.center.y);
+    d.sleep(600);
+    d.clearField(30);
+    d.typeText('qa-renamed');
+    d.sleep(1400);
+    const nodes = d.dump();
+    const shown = nodes.filter((n) => (n.desc || '').startsWith('qa-'));
+    must(shown.length >= 1, 'the filter hid the matching document');
+    must(!shown.some((n) => /月\d+日 扫描/.test(n.desc)), 'unrelated documents survived the filter');
+    s.shot('docs_filtered');
+    d.back();
+    d.sleep(600);
+    return `filter shows ${shown.length}`;
+  });
+
+  s.test('date filter opens a range picker', () => {
+    f.openDocs();
+    const node = d.find(UI.DOCS.dateFilter);
+    must(node, 'date filter chip missing');
+    d.tapPoint(node.center.x, node.center.y);
+    d.sleep(1600);
+    const text = d.dump().map((n) => `${n.desc} ${n.text}`).join(' | ');
+    must(/\d{4}|年|月|OK|取消|确定/.test(text), `date picker did not appear (${text.slice(0, 160)})`);
+    s.shot('date_picker');
+    d.back();
+    d.sleep(800);
+    return 'range picker opens';
+  });
+
+  gated('multi-select tracks the selection count', () => {
+    f.openDocs();
+    const multi = d.find(UI.DOCS.multiSelect);
+    must(multi, 'multi-select entry point missing');
+    d.tapPoint(multi.center.x, multi.center.y);
+    d.sleep(900);
+    must(d.dump().some((n) => (n.desc || '').includes(UI.DOCS.selectedPrefix)), 'the header did not switch to selection');
+    const card = d.dump().find((n) => (n.desc || '').includes('qa-renamed-01'));
+    must(card, 'no row to select');
+    d.tapPoint(card.center.x, card.center.y);
+    d.sleep(700);
+    const sel = f.readInt(/已选\s*(\d+)/, d.dump());
+    must(sel === 1, `header shows 已选 ${sel}, expected 1`);
+    s.shot('docs_multiselect');
+    const done = d.dump().find((n) => (n.desc || '') === UI.DOCS.done);
+    must(done, 'no way to leave selection mode');
+    d.tapPoint(done.center.x, done.center.y);
+    d.sleep(600);
+    return `selection count ${sel}`;
+  });
+
+  gated('PDF viewer renders the document', () => {
+    f.openDocs();
+    const card = d.dump().find((n) => (n.desc || '').includes('qa-renamed-01'));
+    must(card, 'the doc under view vanished');
+    d.tap(card.desc);
+    d.sleep(6000);
+    const nodes = d.dump();
+    const file = s.shot('pdf_viewer');
+    const st = png.stats(png.read(file));
+    must(st.distinct > 60, `viewer looks blank: ${st.distinct} colours, dominant #${st.dominant.color}`);
+    must(nodes.some((n) => (n.desc || '').includes('qa-renamed-01')), 'viewer did not title itself with the doc');
+    d.back();
+    d.sleep(1200);
+    return `viewer rendered ${st.distinct} colours`;
+  });
+
+  gated('share hands the PDF to a system target', () => {
+    f.openDocs();
+    const share = d.dump().find((n) => (n.desc || '') === UI.DOCS.share);
+    must(share, 'per-row share action missing');
+    d.tapPoint(share.center.x, share.center.y);
+    d.sleep(4000);
+    s.shot('share_chooser');
+    must(!d.isForeground(), `no chooser took the foreground (focus=${d.currentFocus()})`);
+    d.back();
+    d.sleep(1500);
+    f.home();
+    return 'chooser appeared and backed out';
+  });
+
+  s.test('library survives a force-stop', () => {
+    d.forceStop();
+    d.sleep(1300);
+    d.launch();
+    d.waitFor(UI.HOME.brand, { timeoutMs: 15000 });
+    f.openDocs();
+    must(d.dump().some((n) => (n.desc || '').includes('qa-renamed-01')), 'exported document lost after a restart');
+    return `still ${f.docCount()} documents`;
+  });
+
+  gated('single delete removes exactly one document', () => {
+    f.openDocs();
+    const before = f.docCount();
+    must(d.dump().some((n) => (n.desc || '').includes('qa-renamed-01')), 'the doc to delete vanished');
+    const del = d.dump().find((n) => (n.desc || '') === UI.DOCS.delete);
+    must(del, 'per-row delete action missing');
+    d.tapPoint(del.center.x, del.center.y);
+    d.sleep(1500);
+    // The confirm sheet also contains a 删除 button; the dialog one sits lowest.
+    const confirm = d.dump()
+      .filter((n) => (n.desc || '') === UI.DOCS.delete)
+      .sort((a, b) => b.center.y - a.center.y)[0];
+    must(confirm, 'the delete confirmation sheet did not appear');
+    d.tapPoint(confirm.center.x, confirm.center.y);
+    d.sleep(2200);
+    const after = f.docCount();
+    must(after === before - 1, `library ${before} -> ${after} after deleting one document`);
+    return `library ${before} -> ${after}`;
+  });
+
+  gated('mode choice survives an app restart', () => {
+    f.home();
+    d.tap(UI.HOME.modes.bw);
+    d.sleep(600);
+    if (!modeRefs.bw) throw new Error('no mode reference captured — the chip tests did not run');
+    d.forceStop();
+    d.sleep(1100);
+    d.launch();
+    d.waitFor(UI.HOME.modes.color, { timeoutMs: 15000 });
+    const after = s.shot('after_restart_modes');
+    const score = Object.fromEntries(
+      Object.entries(modeRefs).map(([m, file]) => [m, png.diffRatio(png.read(file), png.read(after), band)])
+    );
+    const best = Object.entries(score).sort((a, b) => a[1] - b[1])[0];
+    s.note(`restart similarity to each mode reference: ${JSON.stringify(score)}`);
+    d.tap(UI.HOME.modes.color);
+    d.sleep(400);
+    must(best[0] === 'bw', `restart reverted the mode: the UI matches "${best[0]}" (${best[1].toFixed(4)})`);
+    return `restored to ${best[0]}`;
+  });
+
+  s.test('camera opens the viewfinder and closes cleanly', () => {
+    d.grantAllPermissions();
+    f.home();
+    d.tap(UI.HOME.shoot);
+    d.sleep(4500);
+    const nodes = d.dump();
+    s.shot('camera');
+    const screen = UI.onScreen(nodes);
+    if (screen !== 'camera') {
+      must(nodes.some((n) => (n.desc || '').includes(UI.CAMERA.unavailable)),
+        `拍摄 opened neither the camera nor a stated error (screen="${screen}")`);
+      s.note('camera reported unavailable; the fallback path was exercised');
+    }
+    d.back();
+    d.sleep(1500);
+    must(UI.onScreen(d.dump()) === 'home', 'back from the camera did not return home');
+    return screen;
+  });
+
+  s.test('camera without permission degrades gracefully', () => {
+    d.revokePermissions(['android.permission.CAMERA']);
+    d.forceStop();
+    d.sleep(900);
+    d.launch();
+    d.waitFor(UI.HOME.shoot, { timeoutMs: 15000 });
+    d.tap(UI.HOME.shoot);
+    d.sleep(5000);
+    const nodes = d.dump();
+    s.shot('camera_denied');
+    const text = nodes.map((n) => `${n.desc} ${n.text}`).join(' | ');
+    const handled =
+      text.includes(UI.CAMERA.unavailable) || text.includes('允许') ||
+      UI.onScreen(nodes) === 'camera' || UI.onScreen(nodes) === 'home';
+    must(handled, `no permission prompt, no fallback, no camera (labels: ${text.slice(0, 200)})`);
+    d.back();
+    d.sleep(800);
+    d.grantAllPermissions();
+    return text.includes(UI.CAMERA.unavailable) ? 'fallback shown' : 'prompt or preview handled';
+  });
+
+  s.test('no defect markers surfaced during the run', () => {
+    const pid = d.pidof() ?? 0;
+    const text = d.logcatForPid(pid);
+    const hits = UI.DEFECT_MARKERS.filter((m) => text.includes(m));
+    must(hits.length === 0, `logcat contains: ${hits.join(', ')}`);
+    const errs = d.flutterErrors(text);
+    must(errs.length === 0, `flutter errors: ${errs.slice(0, 3).join(' || ')}`);
+    return 'clean';
+  });
+
+  return s.write();
+};
