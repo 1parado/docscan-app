@@ -26,7 +26,12 @@ class _HomePageState extends ConsumerState<HomePage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) ref.read(libraryProvider.notifier).reload();
+      if (!mounted) return;
+      ref.read(libraryProvider.notifier).reload();
+      // setMode/setAutoCrop persist to SharedPreferences; without this read the
+      // written value is never applied, so every restart silently falls back to
+      // 彩色 + 裁边 on.
+      ref.read(sessionProvider.notifier).loadPrefs();
     });
   }
 
@@ -46,15 +51,22 @@ class _HomePageState extends ConsumerState<HomePage> {
       final picked = await picker.pickMultiImage(imageQuality: 92);
       if (picked.isEmpty) return;
       final session = ref.read(sessionProvider.notifier);
+      var needsManualCrop = false;
       for (final x in picked) {
         final bytes = await x.readAsBytes();
         final page = await session.processBytes(Uint8List.fromList(bytes));
         session.add(page);
-        if (mounted && page.cropStatus == 'not_found') {
-          setState(() => _flash = '有照片未检测到边缘，可在缩略图上手动裁剪');
-        }
+        if (page.cropStatus == 'not_found') needsManualCrop = true;
       }
-      if (mounted) _openResult(context);
+      if (!mounted) return;
+      // The warning is drawn only by the session view, so jumping to the export
+      // screen would hide the one case where the user must act: a page with no
+      // detected edge has to be cropped on its thumbnail.
+      if (needsManualCrop) {
+        setState(() => _flash = '有照片未检测到边缘，可在缩略图上手动裁剪');
+      } else {
+        _openResult(context);
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -218,7 +230,7 @@ class _IdleView extends StatelessWidget {
                       fit: StackFit.expand,
                       children: [
                         doc.firstPageImage.existsSync()
-                            ? Image.file(doc.firstPageImage, fit: BoxFit.cover)
+                            ? Image.file(doc.firstPageImage, fit: BoxFit.cover, cacheWidth: 290)
                             : const ColoredBox(color: Ds.frost),
                         Positioned(
                           left: 0, right: 0, bottom: 0,
@@ -397,15 +409,14 @@ class _PageThumb extends ConsumerWidget {
           final p = pages[index];
           final bytes = await p.file.readAsBytes();
           final newPage = await session.processBytes(bytes, manualCorners: updated);
-          session.removeAt(index);
-          session.add(newPage);
+          session.replaceAt(index, newPage);
         }
       },
       child: Stack(
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(14),
-            child: Image.file(page.file, width: 92, height: 124, fit: BoxFit.cover),
+            child: Image.file(page.file, width: 92, height: 124, fit: BoxFit.cover, cacheWidth: 280),
           ),
           Positioned(
             left: 5, top: 5,

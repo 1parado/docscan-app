@@ -330,24 +330,31 @@ class _DocsPageState extends ConsumerState<DocsPage> {
                     onPressed: safePage > 0 ? () => setState(() => _page = safePage - 1) : null,
                     icon: const Icon(Icons.chevron_left),
                   ),
-                  for (var p = 0; p < pageCount; p++)
-                    GestureDetector(
-                      onTap: () => setState(() => _page = p),
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(horizontal: 4),
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: p == safePage ? Ds.clover : Colors.white,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                              color: p == safePage ? Ds.clover : Colors.black.withValues(alpha: 0.08)),
+                  for (final p in pageSlots(safePage, pageCount))
+                    if (p == null)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 2),
+                        child: Text('…',
+                            style: TextStyle(fontSize: 12.5, color: Ds.textDim)),
+                      )
+                    else
+                      GestureDetector(
+                        onTap: () => setState(() => _page = p),
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 4),
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: p == safePage ? Ds.clover : Colors.white,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: p == safePage ? Ds.clover : Colors.black.withValues(alpha: 0.08)),
+                          ),
+                          child: Text('${p + 1}', style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: p == safePage ? FontWeight.w600 : FontWeight.w400,
+                              color: p == safePage ? Colors.white : Ds.textDim)),
                         ),
-                        child: Text('${p + 1}', style: TextStyle(
-                            fontSize: 12.5,
-                            fontWeight: p == safePage ? FontWeight.w600 : FontWeight.w400,
-                            color: p == safePage ? Colors.white : Ds.textDim)),
                       ),
-                    ),
                   IconButton(
                     onPressed: safePage < pageCount - 1 ? () => setState(() => _page = safePage + 1) : null,
                     icon: const Icon(Icons.chevron_right),
@@ -381,6 +388,21 @@ class _DocsPageState extends ConsumerState<DocsPage> {
     );
   }
 
+}
+
+/// Page chips to show, capped at five slots whatever the library size:
+/// first, gap, current, gap, last. The row that holds these has a fixed screen
+/// width, so rendering one chip per page clipped off the edge from ~65 documents
+/// onward (measured: 35px past the right edge at 7 pages, 1286px at 30).
+List<int?> pageSlots(int current, int total) {
+  if (total <= 5) return [for (var p = 0; p < total; p++) p];
+  final keep = <int>{0, total - 1, current}.toList()..sort();
+  final slots = <int?>[];
+  for (var i = 0; i < keep.length; i++) {
+    if (i > 0 && keep[i] - keep[i - 1] > 1) slots.add(null);
+    slots.add(keep[i]);
+  }
+  return slots;
 }
 
 /// In-app PDF viewer: scrollable rendered pages, no external app.
@@ -465,7 +487,7 @@ class _DocCard extends StatelessWidget {
               child: SizedBox(
                 width: 64, height: 84,
                 child: doc.firstPageImage.existsSync()
-                    ? Image.file(doc.firstPageImage, fit: BoxFit.cover)
+                    ? Image.file(doc.firstPageImage, fit: BoxFit.cover, cacheWidth: 200)
                     : const ColoredBox(color: Ds.frost),
               ),
             ),

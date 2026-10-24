@@ -87,7 +87,23 @@ class ScanSession extends Notifier<List<ScanPage>> {
 
   void add(ScanPage page) => state = [...state, page];
 
-  void removeAt(int i) => state = [...state]..removeAt(i);
+  /// Swap a page without changing its position — re-cropping page 2 of 3 must
+  /// not silently move it to the end of the exported PDF.
+  void replaceAt(int i, ScanPage page) {
+    final next = [...state];
+    if (i < 0 || i >= next.length) return;
+    final old = next[i];
+    if (!identical(old, page)) _discard(old);
+    next[i] = page;
+    state = next;
+  }
+
+  void removeAt(int i) {
+    final next = [...state];
+    final removed = next.removeAt(i);
+    _discard(removed);
+    state = next;
+  }
 
   void reorder(int from, int to) {
     final next = [...state];
@@ -96,7 +112,22 @@ class ScanSession extends Notifier<List<ScanPage>> {
     state = next;
   }
 
-  void clear() => state = [];
+  void clear() {
+    for (final p in state) {
+      _discard(p);
+    }
+    state = [];
+  }
+
+  /// Each page is a full A4 JPEG in the cache dir; dropping the list without
+  /// deleting the file leaves every scan ever taken sitting on the device.
+  static void _discard(ScanPage page) {
+    try {
+      page.file.deleteSync();
+    } catch (_) {
+      // The OS may already have reclaimed the cache; nothing left to clean.
+    }
+  }
 
   Future<Directory> _tmpDir() async => getTemporaryDirectory();
 
@@ -225,7 +256,10 @@ class LibraryStore {
         pdfFile: pdf,
         pageCount: int.tryParse(lines[1]) ?? 0,
         createdAt: DateTime.tryParse(lines[2]) ?? DateTime.now(),
-        firstPageImage: cover.existsSync() ? cover : pdf,
+        // Never fall back to the PDF here: Image.file would try to decode PDF
+        // bytes as a JPEG. The list already checks existsSync() and paints a
+        // placeholder when the cover is missing.
+        firstPageImage: cover,
       ));
     }
     docs.sort((a, b) => b.createdAt.compareTo(a.createdAt));

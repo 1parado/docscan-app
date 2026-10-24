@@ -212,7 +212,7 @@ class _ResultThumb extends ConsumerWidget {
         borderRadius: BorderRadius.circular(12),
         child: Stack(
           children: [
-            Image.file(page.file, height: 190, fit: BoxFit.cover),
+            Image.file(page.file, height: 190, fit: BoxFit.cover, cacheHeight: 570),
             Positioned(
               left: 8, bottom: 8,
               child: Container(

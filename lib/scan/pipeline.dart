@@ -162,15 +162,18 @@ List<List<List<double>>> findQuads(
       final area = (bw * bh).toDouble();
       if (area < imgArea * minAreaRatio || count < 200) continue;
 
-      // Coverage per side: an outline rectangle touches all four sides of
-      // its bbox along a meaningful fraction of each side.
+      // Coverage per side: a page outline runs along all four sides of its
+      // bbox. The band has to scale with the shape, because a tilted rectangle
+      // leans away from the bbox edge — with a fixed ±2px band only a page
+      // square to the frame ever passes (a 3° tilt on a 400px side drifts ~21px).
+      final band = 2 + (0.08 * (bw < bh ? bw : bh)).round();
       var top = 0, bottom = 0, left = 0, right = 0;
       for (final idx in blob) {
         final px = idx % w, py = idx ~/ w;
-        if (py <= minY + 2) top++;
-        if (py >= maxY - 2) bottom++;
-        if (px <= minX + 2) left++;
-        if (px >= maxX - 2) right++;
+        if (py <= minY + band) top++;
+        if (py >= maxY - band) bottom++;
+        if (px <= minX + band) left++;
+        if (px >= maxX - band) right++;
       }
       final okTop = top > bw * 0.25;
       final okBottom = bottom > bw * 0.25;
