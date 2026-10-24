@@ -34,34 +34,26 @@ class _AdjustPageState extends ConsumerState<AdjustPage> {
     super.initState();
     final pages = ref.read(sessionProvider);
     final page = pages[widget.pageIndex];
-    // init with an 85% centered quad; will be overridden after image loads
-    WidgetsBinding.instance.addPostFrameCallback((_) => _initQuad());
-    // Decode dims asynchronously (file must exist; it does)
-    img.Image? decoded;
+    // Initialize the quad only once the image dimensions are known — an
+    // early init against the (1,1) placeholder leaves two corners collapsed
+    // at the top-left (the "triangle" bug).
     () async {
       final bytes = await page.file.readAsBytes();
-      decoded = decodeImage(bytes);
-      if (mounted && decoded != null) {
-        setState(() => _imgSize = Size(decoded!.width.toDouble(), decoded!.height.toDouble()));
-        _initQuad();
-      }
+      final decoded = decodeImage(bytes);
+      if (!mounted) return;
+      setState(() {
+        _imgSize = Size(decoded.width.toDouble(), decoded.height.toDouble());
+        _quad
+          ..clear()
+          ..addAll([
+            Offset(_imgSize.width * 0.08, _imgSize.height * 0.08),
+            Offset(_imgSize.width * 0.92, _imgSize.height * 0.08),
+            Offset(_imgSize.width * 0.92, _imgSize.height * 0.92),
+            Offset(_imgSize.width * 0.08, _imgSize.height * 0.92),
+          ]);
+        _loaded = true;
+      });
     }();
-  }
-
-  void _initQuad() {
-    if (!mounted || _loaded) return;
-    final size = _imgSize;
-    setState(() {
-      _quad
-        ..clear()
-        ..addAll([
-          Offset(size.width * 0.08, size.height * 0.08),
-          Offset(size.width * 0.92, size.height * 0.08),
-          Offset(size.width * 0.92, size.height * 0.92),
-          Offset(size.width * 0.08, size.height * 0.92),
-        ]);
-      _loaded = true;
-    });
   }
 
   void _onDrag(Offset local, Offset imgTopLeft, double scale) {
