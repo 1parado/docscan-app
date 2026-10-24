@@ -103,10 +103,13 @@ class _HomePageState extends ConsumerState<HomePage> {
                   const SizedBox(width: 10),
                   const Text('DocScan',
                       style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700, letterSpacing: -0.3)),
-                  const Spacer(),
-                  // Mode chips inline in the header: compact, no separate row
                 ],
               ),
+            ),
+            // Mode + auto-crop right under the header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+              child: _ModeSwitch(session: session),
             ),
 
             // ---------- Recent strip (has content? show it : show intro) ----------
@@ -116,74 +119,66 @@ class _HomePageState extends ConsumerState<HomePage> {
                   : _IdleView(recent: recent),
             ),
 
-            // ---------- Controls (thumb zone, above the tab bar) ----------
+            // ---------- Capture controls (thumb zone) ----------
             Padding(
               padding: EdgeInsets.fromLTRB(20, 10, 20, 24 + pad.bottom * 0.4),
-              child: Column(
+              child: Row(
                 children: [
-                  // Mode + auto-crop row
-                  _ModeSwitch(session: session),
-                  const SizedBox(height: 12),
-                  // Capture row
-                  Row(
-                    children: [
-                      Expanded(
-                        flex: 3,
-                        child: GestureDetector(
-                          onTap: _shoot,
-                          child: Container(
-                            height: 64,
-                            decoration: BoxDecoration(
-                              color: Ds.clover,
-                              borderRadius: BorderRadius.circular(18),
-                              boxShadow: [BoxShadow(
-                                  color: Ds.clover.withValues(alpha: 0.3),
-                                  blurRadius: 20, offset: const Offset(0, 6))],
-                            ),
-                            child: Center(
-                              child: _busy
-                                  ? const SizedBox(
-                                      width: 20, height: 20,
-                                      child: CircularProgressIndicator(strokeWidth: 2.4, color: Colors.white))
-                                  : const Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(Icons.photo_camera_outlined, color: Colors.white, size: 21),
-                                        SizedBox(width: 9),
-                                        Text('拍摄',
-                                            style: TextStyle(color: Colors.white, fontSize: 16.5, fontWeight: FontWeight.w600)),
-                                      ],
-                                    ),
-                            ),
+                  Expanded(
+                    flex: 3,
+                    child: GestureDetector(
+                      onTap: _shoot,
+                      child: Container(
+                        height: 64,
+                        decoration: BoxDecoration(
+                          color: Ds.clover,
+                          borderRadius: BorderRadius.circular(18),
+                          boxShadow: [BoxShadow(
+                              color: Ds.clover.withValues(alpha: 0.3),
+                              blurRadius: 20, offset: const Offset(0, 6))],
+                        ),
+                        child: Center(
+                          child: _busy
+                              ? const SizedBox(
+                                  width: 20, height: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2.4, color: Colors.white))
+                              : const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.photo_camera_outlined, color: Colors.white, size: 21),
+                                    SizedBox(width: 9),
+                                    Text('拍摄',
+                                        style: TextStyle(color: Colors.white, fontSize: 16.5, fontWeight: FontWeight.w600)),
+                                  ],
+                                ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    flex: 2,
+                    child: GestureDetector(
+                      onTap: _pickFromAlbum,
+                      child: Container(
+                        height: 64,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
+                        ),
+                        child: const Center(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.photo_library_outlined, color: Ds.text, size: 20),
+                              SizedBox(width: 8),
+                              Text('相册', style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w500)),
+                            ],
                           ),
                         ),
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        flex: 2,
-                        child: GestureDetector(
-                          onTap: _pickFromAlbum,
-                          child: Container(
-                            height: 64,
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(18),
-                              border: Border.all(color: Colors.black.withValues(alpha: 0.08)),
-                            ),
-                            child: const Center(
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.photo_library_outlined, color: Ds.text, size: 20),
-                                  SizedBox(width: 8),
-                                  Text('相册', style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w500)),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ],
               ),
@@ -212,12 +207,6 @@ class _IdleView extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SizedBox(height: 48),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: Text('拍摄文档开始扫描',
-              style: TextStyle(fontSize: 21, fontWeight: FontWeight.w700, color: Ds.text, letterSpacing: -0.4)),
-        ),
         if (recent.isNotEmpty) ...[
           const SizedBox(height: 24),
           Padding(
