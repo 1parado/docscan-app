@@ -187,29 +187,27 @@ class _CameraPageState extends ConsumerState<CameraPage> {
                   : const CircularProgressIndicator(color: Ds.clover),
             ),
 
-          // Top glass bar: mode switch + detect toggle
+          // Top glass bar: everything lives here, nothing floats mid-screen.
           SafeArea(
             bottom: false,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-              child: Row(
-                children: [
-                  Glass(
-                    dark: true,
-                    radius: Ds.radiusSmall,
-                    padding: const EdgeInsets.all(4),
-                    child: Row(
-                      children: [
-                        _modeChip('单页', !_multiPage, () => setState(() => _multiPage = false)),
-                        _modeChip('多页', _multiPage, () => setState(() => _multiPage = true)),
-                      ],
-                    ),
-                  ),
-                  const Spacer(),
-                  Glass(
-                    dark: true,
-                    radius: Ds.radiusSmall,
-                    child: GestureDetector(
+              child: Glass(
+                dark: true,
+                radius: Ds.radiusSmall,
+                padding: const EdgeInsets.fromLTRB(4, 4, 4, 4),
+                child: Row(
+                  children: [
+                    _modeChip('单页', !_multiPage, () => setState(() => _multiPage = false)),
+                    _modeChip('多页', _multiPage, () => setState(() => _multiPage = true)),
+                    const Spacer(),
+                    if (_multiPage && _shotCount > 0)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 4),
+                        child: Text('已拍 $_shotCount 页',
+                            style: const TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.w600)),
+                      ),
+                    GestureDetector(
                       onTap: () async {
                         final on = !_detectEnabled;
                         setState(() => _detectEnabled = on);
@@ -227,20 +225,15 @@ class _CameraPageState extends ConsumerState<CameraPage> {
                             color: _detectEnabled ? Ds.clover : Colors.white.withValues(alpha: 0.5)),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  Glass(
-                    dark: true,
-                    radius: Ds.radiusSmall,
-                    child: GestureDetector(
+                    GestureDetector(
                       onTap: () => Navigator.of(context).pop(),
                       child: const Padding(
                         padding: EdgeInsets.all(9),
                         child: Icon(Icons.close, size: 19, color: Colors.white),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -251,19 +244,6 @@ class _CameraPageState extends ConsumerState<CameraPage> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                if (_multiPage && _shotCount > 0)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 18),
-                    child: Glass(
-                      dark: true,
-                      radius: Ds.radiusSmall,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-                        child: Text('已拍 $_shotCount 页',
-                            style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
-                      ),
-                    ),
-                  ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(24, 0, 24, 26),
                   child: Row(

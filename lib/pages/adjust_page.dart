@@ -129,15 +129,16 @@ class _AdjustPageState extends ConsumerState<AdjustPage> {
                             child: Image.file(page.file, fit: BoxFit.contain),
                           ),
                         ),
-                        Positioned(
-                          left: topLeft.dx, top: topLeft.dy,
-                          child: CustomPaint(
-                            size: Size(dispW, dispH),
-                            painter: _CropQuadPainter(
-                              _quad.map((p) => Offset(p.dx * scale, p.dy * scale)).toList(),
+                        if (_loaded)
+                          Positioned(
+                            left: topLeft.dx, top: topLeft.dy,
+                            child: CustomPaint(
+                              size: Size(dispW, dispH),
+                              painter: _CropQuadPainter(
+                                _quad.map((p) => Offset(p.dx * scale, p.dy * scale)).toList(),
+                              ),
                             ),
                           ),
-                        ),
                       ],
                     ),
                   );
