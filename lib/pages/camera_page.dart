@@ -162,8 +162,9 @@ class _CameraPageState extends ConsumerState<CameraPage> {
       final file = await controller.takePicture();
       final session = ref.read(sessionProvider.notifier);
       // Queue the shot as taken; the warp and the enhancement run when the
-      // session is advanced, so a bad shot can still be thrown away.
-      session.addPending(File(file.path));
+      // session is advanced, so a bad shot can still be thrown away. The marker
+      // the user was aiming with travels with it as a hint for that pass.
+      session.addPending(File(file.path), hintQuad: _detectEnabled ? _quad : null);
 
       if (!mounted) return;
       if (_multiPage) {

@@ -17,11 +17,17 @@ class ScanPage {
     this.manualCorners,
     this.pending = false,
     this.dpi = 200,
+    this.hintQuad,
   });
 
   final File file; // processed A4 JPEG, or the untouched capture while pending
   final String cropStatus; // cropped / kept / not_found / manual / pending
   List<List<double>>? manualCorners; // set by the adjust sheet
+
+  /// The marker the viewfinder was showing when the shutter went, as flat
+  /// normalized TLx,TLy..BLx,BLy. The full-resolution detector gets first
+  /// refusal; this stands in only when it finds nothing.
+  final List<double>? hintQuad;
 
   /// The A4 tier the pipeline chose for this page — the sheet is only as fine
   /// as the pixels the photo really carries.
@@ -100,9 +106,14 @@ class ScanSession extends Notifier<List<ScanPage>> {
 
   /// Queue a capture untouched. The picker and the shutter both hand a file
   /// here; the strip shows the raw photo until 下一步 runs the pipeline.
-  void addPending(File source) => state = [
+  void addPending(File source, {List<double>? hintQuad}) => state = [
         ...state,
-        ScanPage(file: source, cropStatus: 'pending', pending: true),
+        ScanPage(
+          file: source,
+          cropStatus: 'pending',
+          pending: true,
+          hintQuad: hintQuad,
+        ),
       ];
 
   /// How many queued captures are waiting for the pipeline.
@@ -132,6 +143,7 @@ class ScanSession extends Notifier<List<ScanPage>> {
       final fresh = await processBytes(
         await page.file.readAsBytes(),
         manualCorners: page.manualCorners,
+        quadHint: page.hintQuad,
       );
       _discard(page);
       next[i] = fresh;
@@ -201,13 +213,15 @@ class ScanSession extends Notifier<List<ScanPage>> {
   Future<ScanPage> processBytes(
     Uint8List bytes, {
     List<List<double>>? manualCorners,
+    List<double>? quadHint,
   }) async {
     final m = _modeSetting;
     final crop = _autoCrop;
     final dir = await _tmpDir();
     final path = '${dir.path}/page_${DateTime.now().microsecondsSinceEpoch}.jpg';
 
-    final result = await Isolate.run(() => _processImpl(bytes, path, m, crop, manualCorners));
+    final result =
+        await Isolate.run(() => _processImpl(bytes, path, m, crop, manualCorners, quadHint));
 
     return ScanPage(
       file: File(result.$1),
@@ -254,13 +268,24 @@ class ScanSession extends Notifier<List<ScanPage>> {
   ScanModeSetting m,
   bool crop,
   List<List<double>>? manualCorners,
+  List<double>? hintFlat,
 ) {
   final photo = decodeImage(bytes);
+  // The marker came from the preview frame, so it is normalized; the photo it
+  // would crop is the one the sensor wrote, at whatever size that turned out.
+  List<List<double>>? hint;
+  if (hintFlat != null && hintFlat.length == 8) {
+    hint = [
+      for (var i = 0; i < 4; i++)
+        [hintFlat[i * 2] * photo.width, hintFlat[i * 2 + 1] * photo.height],
+    ];
+  }
   final (page, st) = processPage(
     photo,
     mode: ScanMode.values.byName(m.name),
     autoCrop: crop,
     manualCorners: manualCorners,
+    quadHint: hint,
   );
   final dpi = a4DpiFor(page);
   File(outPath).writeAsBytesSync(encodeJpeg(toA4(page, dpi: dpi), quality: 88));

@@ -114,6 +114,20 @@ void main() {
     }
   });
 
+  test('the marker the viewfinder was showing travels to the pipeline', () async {
+    final fake = FakePipeline(tmp);
+    final container = ProviderContainer(overrides: [sessionProvider.overrideWith(() => fake)]);
+    addTearDown(container.dispose);
+    final s = container.read(sessionProvider.notifier);
+    final quad = [0.1, 0.1, 0.9, 0.12, 0.88, 0.9, 0.12, 0.86];
+
+    s.addPending(rawNamed('a'), hintQuad: quad);
+    s.addPending(rawNamed('b'));
+    await s.processPending();
+
+    expect(fake.hints, [quad, null], reason: 'a shot without a marker must not borrow one');
+  });
+
   test('processPending leaves a page that already went through the pipeline', () async {
     final fake = FakePipeline(tmp);
     final container = ProviderContainer(overrides: [sessionProvider.overrideWith(() => fake)]);
@@ -179,13 +193,18 @@ class FakePipeline extends ScanSession {
   final Set<int> notFoundOnCalls;
   final List<String> processed = [];
 
+  /// The viewfinder markers that reached the pipeline, in call order.
+  final List<List<double>?> hints = [];
+
   @override
   Future<ScanPage> processBytes(
     Uint8List bytes, {
     List<List<double>>? manualCorners,
+    List<double>? quadHint,
   }) async {
     final name = 'out_${processed.length}${manualCorners == null ? '' : '_manual'}';
     processed.add(name);
+    hints.add(quadHint);
     return ScanPage(
       file: File('${tmp.path}/$name.jpg')..writeAsBytesSync([4, 5, 6]),
       cropStatus: notFoundOnCalls.contains(processed.length - 1) ? 'not_found' : 'cropped',

@@ -122,6 +122,46 @@ void main() {
     }
   });
 
+  test('the viewfinder marker stands in when the detector finds nothing', () {
+    // A desk split by a hard shadow seam: no plane fits it, so neither detector
+    // can tell where the page ends, and the shot would fall back to uncropped.
+    final photo = img.Image(width: 900, height: 1200, numChannels: 3);
+    for (var y = 0; y < photo.height; y++) {
+      for (var x = 0; x < photo.width; x++) {
+        final desk = x < 420 ? 88 : 196;
+        photo.setPixelRgb(x, y, desk, desk, desk + 4);
+      }
+    }
+    final page = [
+      [250.0, 260.0],
+      [700.0, 300.0],
+      [680.0, 940.0],
+      [230.0, 900.0],
+    ];
+    img.fillPolygon(
+      photo,
+      vertices: page.map((p) => img.Point(p[0].round(), p[1].round())).toList(),
+      color: img.ColorUint8.rgb(214, 213, 210),
+    );
+    expect(findDocumentCorners(photo), isNull, reason: 'this frame needs a failing detector');
+
+    final (cropped, status) = processPage(photo, quadHint: page);
+    expect(status, 'cropped');
+    expect(cropped.width, lessThan(photo.width));
+
+    // A marker floating in the middle of the page has no boundary under it, so
+    // it must not be allowed to become a crop.
+    final floating = [
+      [350.0, 450.0],
+      [560.0, 470.0],
+      [550.0, 700.0],
+      [340.0, 680.0],
+    ];
+    expect(confirmQuad(photo, floating), isFalse);
+    expect(processPage(photo, quadHint: floating).$2, 'not_found');
+    expect(confirmQuad(photo, page), isTrue);
+  });
+
   test('processPage crops, enhances and reports status', () {
     final photo = makePhoto();
     final (page, status) = processPage(photo, mode: ScanMode.gray);

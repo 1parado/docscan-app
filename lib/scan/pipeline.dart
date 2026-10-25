@@ -166,6 +166,25 @@ double _quadToneStep(Uint8List g, int w, int h, List<List<double>> quad) {
 bool _outsideFrame(List<double> p, int w, int h, double d) =>
     p[0] < d || p[1] < d || p[0] > w - 1 - d || p[1] > h - 1 - d;
 
+/// Whether a quad really sits on a boundary in this photo.
+///
+/// The viewfinder hands the shutter the marker the user was looking through,
+/// and at full resolution that is a hint rather than an answer: it was measured
+/// on a 480px frame whose aspect and orientation need not match the JPEG the
+/// sensor actually wrote. So the same test every detector's candidate has to
+/// pass decides — a real page boundary keeps a consistent tone step along all
+/// four sides, and a mis-mapped marker does not.
+bool confirmQuad(img.Image photo, List<List<double>> quad) {
+  if (quad.length != 4 || !_isConvexQuad(quad)) return false;
+  for (final p in quad) {
+    if (p[0] < 0 || p[1] < 0 || p[0] > photo.width - 1 || p[1] > photo.height - 1) {
+      return false;
+    }
+  }
+  final gray = img.grayscale(img.Image.from(photo));
+  return _quadToneStep(_grayPlane(gray), gray.width, gray.height, quad) >= _minToneStep;
+}
+
 double _sample(Uint8List g, int w, int h, double x, double y) =>
     g[(y.round().clamp(0, h - 1)) * w + x.round().clamp(0, w - 1)].toDouble();
 
@@ -1220,6 +1239,7 @@ img.Image toA4(img.Image page, {int? dpi}) {
   ScanMode mode = ScanMode.color,
   bool autoCrop = true,
   List<List<double>>? manualCorners,
+  List<List<double>>? quadHint,
 }) {
   if (manualCorners != null) {
     final warped = fourPointTransform(photo, manualCorners);
@@ -1228,7 +1248,10 @@ img.Image toA4(img.Image page, {int? dpi}) {
   var status = autoCrop ? 'not_found' : 'kept';
   var page = photo;
   if (autoCrop) {
-    final corners = findDocumentCorners(photo);
+    // The detector owns the answer; the marker the viewfinder was showing only
+    // stands in when the full-resolution search comes back empty.
+    final corners = findDocumentCorners(photo) ??
+        (quadHint != null && confirmQuad(photo, quadHint) ? quadHint : null);
     if (corners != null) {
       status = 'kept';
       // skip_cover: a quad covering most of the frame means the photo is
