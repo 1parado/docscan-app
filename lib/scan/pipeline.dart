@@ -71,52 +71,394 @@ double _dist(List<double> a, List<double> b) =>
 /// Find the document quad in a grayscale-or-RGB image.
 /// Returns [TL, TR, BR, BL] each [x, y] in source pixels, or null.
 ///
-/// Port of find_document_corners: downscale to 800px tall, Canny-equivalent
-/// gradient edges, contour search via connected border following, and a
-/// four-point convex check.
+/// Two detectors, in order of trustworthiness. The gradient one finds a page
+/// that stands out from its surroundings; the segmentation one below handles
+/// the shot it cannot — white paper on a pale desk, where the outline is
+/// weaker than the text printed on the page.
 List<List<double>>? findDocumentCorners(img.Image image) {
   const targetH = 800;
-  final ratio = targetH / image.height;
-  final small = img.copyResize(
-    image,
-    width: (image.width * ratio).round(),
-    height: targetH,
-    interpolation: img.Interpolation.linear,
-  );
+  // Downscale only. The viewfinder hands us a 480px frame, and blowing that up
+  // to 800 to "detect at higher resolution" multiplies the work by three and
+  // invents edges the sensor never saw.
+  final ratio = math.min(1.0, targetH / image.height);
+  // Downscale only. The viewfinder hands us a 480px frame, and blowing that up
+  // to 800 to "detect at higher resolution" multiplies the work by three and
+  // invents edges the sensor never saw. Copy instead when there is nothing to
+  // downscale to: grayscale and gaussianBlur both filter in place, and a
+  // detector that blurs the caller's photo steals detail from the warp that
+  // follows it.
+  final small = ratio == 1.0
+      ? img.Image.from(image)
+      : img.copyResize(
+          image,
+          width: (image.width * ratio).round(),
+          height: (image.height * ratio).round(),
+          interpolation: img.Interpolation.average,
+        );
 
   final gray = img.grayscale(small);
   final blurred = img.gaussianBlur(gray, radius: 2);
+  final plane = _grayPlane(blurred);
+  final sw = blurred.width, sh = blurred.height;
   final edges = gradientEdges(blurred);
   dilateEdges(edges, 1);
 
-  final quads = findQuads(edges, minAreaRatio: 0.15, maxShapes: 15);
-  for (final quad in quads) {
+  for (final quad in findQuads(edges, minAreaRatio: 0.15, maxShapes: 15)) {
+    if (_quadToneStep(plane, sw, sh, quad) < _minToneStep) continue;
     return quad
         .map((p) => [p[0] / ratio, p[1] / ratio])
-        .toList(); // first (largest) convex quad wins, like contourArea sort
+        .toList(); // largest convex quad with a real edge under it
+  }
+
+  for (final quad in findQuads(_paperBoundary(blurred), minAreaRatio: 0.15, maxShapes: 5)) {
+    if (_quadToneStep(plane, sw, sh, quad) < _minToneStep) continue;
+    return quad
+        .map((p) => [p[0] / ratio, p[1] / ratio])
+        .toList();
   }
   return null;
 }
 
-/// Simple Canny substitute: Sobel magnitude + hysteresis-free threshold.
-/// OpenCV's Canny is stricter; the quad search below tolerates the noisier
-/// edges because it filters by shape and area.
+/// How far a side has to stand out from what is beyond it, in grey levels.
+const _minToneStep = 4.0;
+
+/// The smallest average tone step across the four sides of a candidate quad.
+///
+/// The blob tests in [findQuads] only ask that edges exist and hug a rectangle,
+/// and two things satisfy that besides a page: a sheet of sensor noise (every
+/// pixel is an edge) and a dense block of printed text (its lines run all the
+/// way across, so they reach four sides). What a page boundary has and neither
+/// of those do is a step that is *consistent* — the paper is brighter than the
+/// desk at every point along the side. So each side is scored by the mean
+/// inside-minus-outside difference times the fraction of samples sharing its
+/// sign: noise cancels in the mean, and a text block's mean is bought at the
+/// cost of half its samples disagreeing. A side lying along the frame border is
+/// a page cut off by the photo, not an edge we can measure, so it is skipped.
+double _quadToneStep(Uint8List g, int w, int h, List<List<double>> quad) {
+  final cx = (quad[0][0] + quad[1][0] + quad[2][0] + quad[3][0]) / 4;
+  final cy = (quad[0][1] + quad[1][1] + quad[2][1] + quad[3][1]) / 4;
+  final d = math.max(2.0, 0.02 * math.min(w, h));
+  var worst = double.infinity;
+
+  for (var i = 0; i < 4; i++) {
+    final a = quad[i], b = quad[(i + 1) % 4];
+    if (_outsideFrame(a, w, h, d) && _outsideFrame(b, w, h, d)) continue;
+    final diffs = <double>[];
+    for (var s = 0; s <= 32; s++) {
+      final t = s / 32.0;
+      final px = a[0] + (b[0] - a[0]) * t;
+      final py = a[1] + (b[1] - a[1]) * t;
+      final vx = cx - px, vy = cy - py;
+      final len = math.sqrt(vx * vx + vy * vy);
+      if (len < 1e-6) continue;
+      final ux = vx / len * d, uy = vy / len * d;
+      diffs.add(_sample(g, w, h, px + ux, py + uy) - _sample(g, w, h, px - ux, py - uy));
+    }
+    if (diffs.isEmpty) continue;
+    final mean = diffs.reduce((x, y) => x + y) / diffs.length;
+    final same = diffs.where((v) => v.sign == mean.sign).length / diffs.length;
+    final score = (mean.abs() * same);
+    if (score < worst) worst = score;
+  }
+  return worst == double.infinity ? 255 : worst;
+}
+
+bool _outsideFrame(List<double> p, int w, int h, double d) =>
+    p[0] < d || p[1] < d || p[0] > w - 1 - d || p[1] > h - 1 - d;
+
+double _sample(Uint8List g, int w, int h, double x, double y) =>
+    g[(y.round().clamp(0, h - 1)) * w + x.round().clamp(0, w - 1)].toDouble();
+
+/// The rim of the largest patch that differs from the desk, as an edge map.
+///
+/// A page is the biggest region whose tone departs from the surface it lies on.
+/// Departure is measured against a smooth surface fitted to the *border ring*
+/// of the frame — pixels the page almost never reaches — so a desk lit from one
+/// corner is modelled rather than mistaken for half a page. Local blurs cannot
+/// do this: a blur window that fits inside the page reports the page as its own
+/// background, and the 8-level step we are looking for cancels out.
+///
+/// The rim of that patch is a closed curve, so the quad search gets an outline
+/// even when the gradient across the edge is weaker than the ink printed on the
+/// page — which is exactly the case where no single gradient bar can work.
+img.Image _paperBoundary(img.Image gray) {
+  final w = gray.width, h = gray.height;
+  final g = _grayPlane(gray);
+  final inset = math.max(2, (0.06 * math.min(w, h)).round());
+
+  bool isBorder(int x, int y) => x < inset || y < inset || x >= w - inset || y >= h - inset;
+
+  final coeff = _fitSurface(g, w, h, isBorder);
+  if (coeff == null) return _blankBoundary(w, h);
+
+  // Residual spread over the fitted pixels: what the surface cannot explain is
+  // the desk's own grain, and the page has to beat it.
+  var sum2 = 0.0, n = 0;
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      if (!isBorder(x, y)) continue;
+      final r = g[y * w + x] - _evalSurface(coeff, x, y, w, h);
+      sum2 += r * r;
+      n++;
+    }
+  }
+  final sigma = math.sqrt(sum2 / math.max(1, n));
+  final bar = math.max(4.0, sigma * 2.2);
+
+  var best = const _Blob();
+  for (final sign in [1, -1]) {
+    final pass = Uint8List(w * h);
+    for (var i = 0; i < pass.length; i++) {
+      final r = g[i] - _evalSurface(coeff, i % w, i ~/ w, w, h);
+      pass[i] = sign * r > bar ? 1 : 0;
+    }
+    final blob = _largestFilledBlob(pass, w, h);
+    if (blob.area > best.area) best = blob;
+  }
+
+  final out = img.Image(width: w, height: h, numChannels: 1);
+  final o = _plane(out).$1;
+  if (best.indices.length < 200) return out;
+  final inBlob = Uint8List(w * h);
+  for (final idx in best.indices) {
+    inBlob[idx] = 1;
+  }
+  for (final idx in best.indices) {
+    final px = idx % w, py = idx ~/ w;
+    var rim = px == 0 || py == 0 || px == w - 1 || py == h - 1;
+    for (var dy = -1; dy <= 1 && !rim; dy++) {
+      for (var dx = -1; dx <= 1 && !rim; dx++) {
+        if (inBlob[(py + dy).clamp(0, h - 1) * w + (px + dx).clamp(0, w - 1)] == 0) rim = true;
+      }
+    }
+    if (rim) o[idx] = 255;
+  }
+  return out;
+}
+
+img.Image _blankBoundary(int w, int h) => img.Image(width: w, height: h, numChannels: 1);
+
+class _Blob {
+  final List<int> indices;
+  final double area;
+  const _Blob([this.indices = const [], this.area = 0]);
+}
+
+/// Least-squares plane fitted to the pixels where [select] says true.
+///
+/// Returns the coefficients of 1, x, y in frame-normalised coordinates, or null
+/// when there are not enough pixels to pin the surface down. Only a plane: the
+/// selected pixels form the frame's border ring, so nothing constrains the
+/// interior, and a quadratic happily bends the wrong way once it is
+/// extrapolated in — which is what turned a flat desk into a bowl.
+List<double>? _fitSurface(Uint8List g, int w, int h, bool Function(int x, int y) select) {
+  final a = List<List<double>>.generate(3, (_) => List<double>.filled(3, 0));
+  final rhs = List<double>.filled(3, 0);
+  var count = 0;
+  for (var y = 0; y < h; y++) {
+    final ny = (2.0 * y / math.max(1, h - 1)) - 1;
+    for (var x = 0; x < w; x++) {
+      if (!select(x, y)) continue;
+      final nx = (2.0 * x / math.max(1, w - 1)) - 1;
+      final b = [1.0, nx, ny];
+      final v = g[y * w + x].toDouble();
+      for (var i = 0; i < 3; i++) {
+        for (var j = i; j < 3; j++) {
+          a[i][j] += b[i] * b[j];
+        }
+        rhs[i] += b[i] * v;
+      }
+      count++;
+    }
+  }
+  if (count < 32) return null;
+  for (var i = 0; i < 3; i++) {
+    for (var j = 0; j < i; j++) {
+      a[i][j] = a[j][i];
+    }
+  }
+  return _solve(a, rhs);
+}
+
+double _evalSurface(List<double> c, int x, int y, int w, int h) {
+  final nx = (2.0 * x / math.max(1, w - 1)) - 1;
+  final ny = (2.0 * y / math.max(1, h - 1)) - 1;
+  return c[0] + c[1] * nx + c[2] * ny;
+}
+
+/// Gaussian elimination with partial pivoting on a small symmetric system.
+List<double>? _solve(List<List<double>> a, List<double> rhs) {
+  final n = rhs.length;
+  for (var col = 0; col < n; col++) {
+    var piv = col;
+    for (var r = col + 1; r < n; r++) {
+      if (a[r][col].abs() > a[piv][col].abs()) piv = r;
+    }
+    if (a[piv][col].abs() < 1e-9) return null;
+    if (piv != col) {
+      final t = a[col];
+      a[col] = a[piv];
+      a[piv] = t;
+      final tr = rhs[col];
+      rhs[col] = rhs[piv];
+      rhs[piv] = tr;
+    }
+    final d = a[col][col];
+    for (var r = col + 1; r < n; r++) {
+      final f = a[r][col] / d;
+      if (f == 0) continue;
+      for (var cc = col; cc < n; cc++) {
+        a[r][cc] -= f * a[col][cc];
+      }
+      rhs[r] -= f * rhs[col];
+    }
+  }
+  final out = List<double>.filled(n, 0);
+  for (var r = n - 1; r >= 0; r--) {
+    var s = rhs[r];
+    for (var cc = r + 1; cc < n; cc++) {
+      s -= a[r][cc] * out[cc];
+    }
+    out[r] = s / a[r][r];
+  }
+  return out;
+}
+
+/// The biggest connected region of [pass] that fills its own bounding box.
+///
+/// Without the fill test the desk itself wins — a bright wall in the background
+/// is a large, solid region, and tracing its rim would hand the quad search a
+/// rectangle that is not the page at all. A page fills its bbox; creases,
+/// shadows and hands do not.
+_Blob _largestFilledBlob(Uint8List pass, int w, int h) {
+  final seen = Uint8List(w * h);
+  final stack = <int>[];
+  var best = const _Blob();
+  for (var start = 0; start < pass.length; start++) {
+    if (seen[start] != 0 || pass[start] == 0) continue;
+    seen[start] = 1;
+    stack.add(start);
+    final blob = <int>[];
+    var minX = start % w, maxX = minX, minY = start ~/ w, maxY = minY;
+    while (stack.isNotEmpty) {
+      final idx = stack.removeLast();
+      blob.add(idx);
+      final px = idx % w, py = idx ~/ w;
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+      for (var dy = -1; dy <= 1; dy++) {
+        final ny = py + dy;
+        if (ny < 0 || ny >= h) continue;
+        for (var dx = -1; dx <= 1; dx++) {
+          final nx = px + dx;
+          if (nx < 0 || nx >= w || (dx == 0 && dy == 0)) continue;
+          final n = ny * w + nx;
+          if (seen[n] != 0 || pass[n] == 0) continue;
+          seen[n] = 1;
+          stack.add(n);
+        }
+      }
+    }
+    final box = (maxX - minX + 1) * (maxY - minY + 1).toDouble();
+    final area = box;
+    if (blob.length / math.max(1, box) < 0.72) continue;
+    if (blob.length < 200) continue;
+    if (area > best.area) best = _Blob(blob, area);
+  }
+  return best;
+}
+
+/// One byte per pixel: the average of whatever channels the image carries.
+Uint8List _grayPlane(img.Image im) {
+  final (d, stride) = _plane(im);
+  final w = im.width, h = im.height;
+  if (im.numChannels == 1 && stride == w) return d;
+  final out = Uint8List(w * h);
+  for (var y = 0; y < h; y++) {
+    final row = y * stride;
+    for (var x = 0; x < w; x++) {
+      final p = row + x * im.numChannels;
+      var sum = 0;
+      for (var ch = 0; ch < im.numChannels && ch < 3; ch++) {
+        sum += d[p + ch];
+      }
+      out[y * w + x] = sum ~/ math.min(3, im.numChannels);
+    }
+  }
+  return out;
+}
+
+/// Sobel magnitude + double-threshold binarisation — Canny without the
+/// non-maximum suppression.
+///
+/// The bar used to be a fixed `mag > 60`, which fails in both directions: a
+/// page shot against a dark desk has every crease in the paper over it, while a
+/// white page on a pale table tops out near 50 and comes back with no outline
+/// at all. So the bars come from the magnitude histogram instead — the 99th
+/// percentile is where this frame's real edges live — and the low bar is only
+/// reachable from the high one, which is what lets a weak-but-continuous page
+/// edge survive while an isolated speck of texture does not.
 img.Image gradientEdges(img.Image gray) {
   final w = gray.width, h = gray.height;
-  final out = img.Image(width: w, height: h, numChannels: 1);
-  final l = gray.data!;
-  final o = out.data!;
-
-  int g(int x, int y) => l.getPixel(x, y).luminance.toInt();
+  final g = _grayPlane(gray);
+  final mag = Uint8List(w * h);
 
   for (var y = 1; y < h - 1; y++) {
+    final row = y * w;
     for (var x = 1; x < w - 1; x++) {
-      final gx = -g(x - 1, y - 1) - 2 * g(x - 1, y) - g(x - 1, y + 1) +
-          g(x + 1, y - 1) + 2 * g(x + 1, y) + g(x + 1, y + 1);
-      final gy = -g(x - 1, y - 1) - 2 * g(x, y - 1) - g(x + 1, y - 1) +
-          g(x - 1, y + 1) + 2 * g(x, y + 1) + g(x + 1, y + 1);
-      final mag = math.sqrt(gx * gx + gy * gy).clamp(0, 255).toInt();
-      o.setPixelR(x, y, mag > 60 ? 255 : 0);
+      final p = row + x;
+      final gx = -g[p - w - 1] - 2 * g[p - 1] - g[p + w - 1] +
+          g[p - w + 1] + 2 * g[p + 1] + g[p + w + 1];
+      final gy = -g[p - w - 1] - 2 * g[p - w] - g[p - w + 1] +
+          g[p + w - 1] + 2 * g[p + w] + g[p + w + 1];
+      var m = math.sqrt(gx * gx + gy * gy).round();
+      if (m > 255) m = 255;
+      mag[p] = m;
+    }
+  }
+
+  final hist = Uint32List(256);
+  for (final m in mag) {
+    hist[m]++;
+  }
+  final total = w * h;
+  var acc = 0, p99 = 0;
+  for (var v = 0; v < 256; v++) {
+    acc += hist[v];
+    if (acc >= (total * 0.99).ceil()) {
+      p99 = v;
+      break;
+    }
+  }
+  final high = p99.clamp(35, 180);
+  final low = (high * 0.4).round();
+
+  final out = img.Image(width: w, height: h, numChannels: 1);
+  final o = _plane(out).$1;
+  final stack = <int>[];
+  for (var i = 0; i < total; i++) {
+    if (mag[i] >= high) {
+      o[i] = 255;
+      stack.add(i);
+    }
+  }
+  while (stack.isNotEmpty) {
+    final idx = stack.removeLast();
+    final px = idx % w, py = idx ~/ w;
+    for (var dy = -1; dy <= 1; dy++) {
+      final ny = py + dy;
+      if (ny < 0 || ny >= h) continue;
+      for (var dx = -1; dx <= 1; dx++) {
+        final nx = px + dx;
+        if (nx < 0 || nx >= w || (dx == 0 && dy == 0)) continue;
+        final n = ny * w + nx;
+        if (o[n] == 0 && mag[n] >= low) {
+          o[n] = 255;
+          stack.add(n);
+        }
+      }
     }
   }
   return out;
@@ -125,17 +467,18 @@ img.Image gradientEdges(img.Image gray) {
 void dilateEdges(img.Image bin, int iterations) {
   for (var it = 0; it < iterations; it++) {
     final copy = img.Image.from(bin);
-    final c = copy.data!;
-    final o = bin.data!;
-    for (var y = 1; y < bin.height - 1; y++) {
-      for (var x = 1; x < bin.width - 1; x++) {
-        var v = 0;
-        for (var dy = -1; dy <= 1 && v == 0; dy++) {
-          for (var dx = -1; dx <= 1 && v == 0; dx++) {
-            if (c.getPixel(x + dx, y + dy).luminance > 0) v = 255;
+    final (c, _) = _plane(copy);
+    final o = _plane(bin).$1;
+    final w = bin.width, h = bin.height;
+    for (var y = 1; y < h - 1; y++) {
+      for (var x = 1; x < w - 1; x++) {
+        final p = y * w + x;
+        if (o[p] != 0) continue;
+        for (var dy = -1; dy <= 1 && o[p] == 0; dy++) {
+          for (var dx = -1; dx <= 1 && o[p] == 0; dx++) {
+            if (c[(y + dy) * w + x + dx] != 0) o[p] = 255;
           }
         }
-        o.setPixelR(x, y, v);
       }
     }
   }
@@ -147,8 +490,8 @@ void dilateEdges(img.Image bin, int iterations) {
 /// flood-filled; its axis-aligned bounding box is then validated as the
 /// document quad by checking that the blob hugs all four bbox sides (an
 /// open rectangle outline does; a straight line or a blob hugging one side
-/// does not). Corner positions come from the blob's extreme points along the
-/// two diagonals plus the four bbox corners projected onto the blob.
+/// does not). Each hugging side is fitted with a line, and the quad's corners
+/// are where adjacent fitted sides cross.
 List<List<List<double>>> findQuads(
   img.Image bin, {
   required double minAreaRatio,
@@ -157,9 +500,9 @@ List<List<List<double>>> findQuads(
   final w = bin.width, h = bin.height;
   final imgArea = (w * h).toDouble();
   final visited = List<bool>.filled(w * h, false);
-  final b = bin.data!;
+  final b = _plane(bin).$1;
 
-  bool edge(int x, int y) => b.getPixel(x, y).luminance > 0;
+  bool edge(int x, int y) => b[y * w + x] != 0;
 
   final results = <(double, List<List<double>>)>[];
 
@@ -198,13 +541,30 @@ List<List<List<double>>> findQuads(
       // leans away from the bbox edge — with a fixed ±2px band only a page
       // square to the frame ever passes (a 3° tilt on a 400px side drifts ~21px).
       final band = 2 + (0.08 * (bw < bh ? bw : bh)).round();
+      final sides = [<int>[], <int>[], <int>[], <int>[]]; // top, right, bottom, left
+      // The band that proves coverage also catches the first centimetre of the
+      // two neighbouring sides. Those stubs are excluded from the point sets the
+      // lines are fitted to — the corner they lean on is extrapolated instead.
+      final inner = band + 2;
       var top = 0, bottom = 0, left = 0, right = 0;
       for (final idx in blob) {
         final px = idx % w, py = idx ~/ w;
-        if (py <= minY + band) top++;
-        if (py >= maxY - band) bottom++;
-        if (px <= minX + band) left++;
-        if (px >= maxX - band) right++;
+        if (py <= minY + band) {
+          top++;
+          if (px > minX + inner && px < maxX - inner) sides[0].add(idx);
+        }
+        if (py >= maxY - band) {
+          bottom++;
+          if (px > minX + inner && px < maxX - inner) sides[2].add(idx);
+        }
+        if (px <= minX + band) {
+          left++;
+          if (py > minY + inner && py < maxY - inner) sides[3].add(idx);
+        }
+        if (px >= maxX - band) {
+          right++;
+          if (py > minY + inner && py < maxY - inner) sides[1].add(idx);
+        }
       }
       final okTop = top > bw * 0.25;
       final okBottom = bottom > bw * 0.25;
@@ -212,12 +572,14 @@ List<List<List<double>>> findQuads(
       final okRight = right > bh * 0.25;
       if (!(okTop && okBottom && okLeft && okRight)) continue;
 
-      // Corners: extreme points toward each bbox corner. For every blob
-      // pixel take the one minimizing distance to each bbox corner — the
-      // document's rounded/straight corners land there.
+      // Corners: where the two fitted edges meet. Taking the blob pixel closest
+      // to each bbox corner instead reports the corner of the *box* — a page
+      // tilted a few degrees has no blob pixels out there, so the crop lands
+      // tens of pixels short of the paper and cuts the corner off.
+      final lines = [for (final s in sides) _fitEdge(s, w)];
       List<double> cornerNear(int cx, int cy) {
         var best = 1 << 30;
-        var bestP = [minX.toDouble(), minY.toDouble()];
+        var bestP = [cx.toDouble(), cy.toDouble()];
         for (final idx in blob) {
           final px = idx % w, py = idx ~/ w;
           final d = (px - cx) * (px - cx) + (py - cy) * (py - cy);
@@ -229,12 +591,23 @@ List<List<List<double>>> findQuads(
         return bestP;
       }
 
-      final raw = [
-        cornerNear(minX, minY), // TL
-        cornerNear(maxX, minY), // TR
-        cornerNear(maxX, maxY), // BR
-        cornerNear(minX, maxY), // BL
-      ];
+      final raw = <List<double>>[];
+      for (var i = 0; i < 4; i++) {
+        final hit = _intersect(lines[i], lines[(i + 1) % 4]);
+        // sides[i] x sides[i+1] walks TR, BR, BL, TL.
+        final fallback = [
+          [maxX, minY],
+          [maxX, maxY],
+          [minX, maxY],
+          [minX, minY]
+        ][i];
+        final p = hit != null &&
+                hit[0] > minX - band && hit[0] < maxX + band &&
+                hit[1] > minY - band && hit[1] < maxY + band
+            ? hit
+            : cornerNear(fallback[0], fallback[1]);
+        raw.add(p);
+      }
       if (_isConvexQuad(raw)) {
         results.add((area, orderPoints(raw)));
       }
@@ -244,6 +617,72 @@ List<List<List<double>>> findQuads(
   }
   results.sort((a, b) => b.$1.compareTo(a.$1));
   return results.map((r) => r.$2).toList();
+}
+
+/// A line through the given blob pixels, as `[a, b, c]` with a·x + b·y = c and
+/// (a, b) a unit normal, or null if the points are too few or too scattered to
+/// be one edge.
+///
+/// Total least squares: the ordinary `y = mx + c` fit cannot describe the
+/// vertical sides of a page. The fit is then repeated keeping only the points
+/// near the previous line, which pulls it onto the edge itself and off the
+/// corner stubs of the neighbouring edges that the coverage band also collected.
+List<double>? _fitEdge(List<int> pts, int w) {
+  if (pts.length < 16) return null;
+  var xs = pts;
+  // The edge map comes off a blurred image, so a real side is a few pixels of
+  // gradient thick rather than one clean line of points: start loose enough to
+  // hold that ridge, then tighten onto the densest line in it.
+  const trims = [2.5, 1.5, 1.0];
+  List<double>? line;
+  for (var pass = 0; pass < 3; pass++) {
+    final trim = trims[pass];
+    final n = xs.length;
+    if (n < 16) return null;
+    var mx = 0.0, my = 0.0;
+    for (final idx in xs) {
+      mx += idx % w;
+      my += idx ~/ w;
+    }
+    mx /= n;
+    my /= n;
+    var sxx = 0.0, syy = 0.0, sxy = 0.0;
+    for (final idx in xs) {
+      final dx = (idx % w) - mx, dy = (idx ~/ w) - my;
+      sxx += dx * dx;
+      syy += dy * dy;
+      sxy += dx * dy;
+    }
+    // Principal eigenvector of the 2x2 covariance.
+    final theta = 0.5 * math.atan2(2 * sxy, sxx - syy);
+    final a = -math.sin(theta), b = math.cos(theta); // unit normal
+    line = [a, b, a * mx + b * my];
+    if (pass == 2) break;
+    final keep = <int>[];
+    for (final idx in xs) {
+      if ((a * (idx % w) + b * (idx ~/ w) - line[2]).abs() <= trim) keep.add(idx);
+    }
+    xs = keep;
+  }
+  // A line needs to be a line: a rounded corner is a fan of directions, and it
+  // would otherwise pass for an edge and drag the intersection off with it.
+  var spread = 0.0;
+  for (final idx in xs) {
+    final d = (line![0] * (idx % w) + line[1] * (idx ~/ w) - line[2]).abs();
+    if (d > spread) spread = d;
+  }
+  return spread <= trims[0] ? line : null;
+}
+
+/// Where two lines cross, or null when they are near-parallel.
+List<double>? _intersect(List<double>? l1, List<double>? l2) {
+  if (l1 == null || l2 == null) return null;
+  final det = l1[0] * l2[1] - l2[0] * l1[1];
+  if (det.abs() < 0.26) return null; // shallower than ~15°, unstable intersection
+  return [
+    (l1[2] * l2[1] - l2[2] * l1[1]) / det,
+    (l1[0] * l2[2] - l2[0] * l1[2]) / det,
+  ];
 }
 
 bool _isConvexQuad(List<List<double>> q) {

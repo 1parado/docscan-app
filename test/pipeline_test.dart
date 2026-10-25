@@ -40,6 +40,88 @@ void main() {
         greaterThan(400));
   });
 
+  test('a soft outline the gradient bar cannot separate from ink still crops', () {
+    // White paper on a pale desk: 8 levels across the page edge, against dark
+    // text inside the page that is far stronger. A fixed gradient threshold
+    // tuned for the text loses the outline entirely.
+    final photo = img.Image(width: 900, height: 1200, numChannels: 3);
+    img.fill(photo, color: img.ColorUint8.rgb(236, 235, 233));
+    final doc = img.Image(width: 560, height: 760, numChannels: 3);
+    img.fill(doc, color: img.ColorUint8.rgb(246, 245, 243));
+    final rnd = math.Random(11);
+    for (var i = 0; i < 30; i++) {
+      img.drawLine(
+        doc,
+        x1: 40 + rnd.nextInt(460), y1: 60 + rnd.nextInt(660),
+        x2: 40 + rnd.nextInt(460), y2: 60 + rnd.nextInt(660),
+        color: img.ColorUint8.rgb(60, 60, 64),
+        thickness: 3,
+      );
+    }
+    img.compositeImage(photo, doc, dstX: 170, dstY: 220);
+
+    final corners = findDocumentCorners(photo);
+    expect(corners, isNotNull, reason: 'no quad found in a low-contrast frame');
+    final xs = corners!.map((p) => p[0]).toList();
+    final ys = corners.map((p) => p[1]).toList();
+    final w = xs.reduce((a, b) => math.max(a, b)) - xs.reduce((a, b) => math.min(a, b));
+    final h = ys.reduce((a, b) => math.max(a, b)) - ys.reduce((a, b) => math.min(a, b));
+    expect(w, closeTo(560, 60), reason: 'wrong width: $w at $xs');
+    expect(h, closeTo(760, 60), reason: 'wrong height: $h at $ys');
+  });
+
+  test('a textured desk with no page on it is not a document', () {
+    final photo = img.Image(width: 900, height: 1200, numChannels: 3);
+    final rnd = math.Random(3);
+    for (var y = 0; y < photo.height; y++) {
+      for (var x = 0; x < photo.width; x++) {
+        final grain = 118 + rnd.nextInt(26);
+        photo.setPixelRgb(x, y, grain, grain - 4, grain - 10);
+      }
+    }
+    for (var i = 0; i < 60; i++) {
+      img.drawLine(
+        photo,
+        x1: rnd.nextInt(900), y1: rnd.nextInt(1200),
+        x2: rnd.nextInt(900), y2: rnd.nextInt(1200),
+        color: img.ColorUint8.rgb(80, 76, 70),
+      );
+    }
+    expect(findDocumentCorners(photo), isNull, reason: 'the desk became a page');
+  });
+
+  test('corners land on the page corner, not on its bounding box', () {
+    const true0 = [220.0, 300.0]; // TL
+    const true1 = [880.0, 360.0]; // TR
+    const true2 = [840.0, 1240.0]; // BR
+    const true3 = [180.0, 1180.0]; // BL
+    final photo = img.Image(width: 1200, height: 1600, numChannels: 3);
+    img.fill(photo, color: img.ColorUint8.rgb(110, 108, 104));
+    img.fillPolygon(
+      photo,
+      vertices: [true0, true1, true2, true3]
+          .map((p) => img.Point(p[0].round(), p[1].round()))
+          .toList(),
+      color: img.ColorUint8.rgb(245, 244, 240),
+    );
+    for (var i = 0; i < 24; i++) {
+      img.drawLine(
+        photo,
+        x1: 300, y1: 420 + i * 32, x2: 760, y2: 430 + i * 32,
+        color: img.ColorUint8.rgb(64, 64, 70),
+      );
+    }
+
+    final corners = findDocumentCorners(photo)!;
+    final want = [true0, true1, true2, true3];
+    for (var i = 0; i < 4; i++) {
+      final dx = (corners[i][0] - want[i][0]).abs();
+      final dy = (corners[i][1] - want[i][1]).abs();
+      expect(math.max(dx, dy), lessThan(5),
+          reason: 'corner $i at ${corners[i]}, should be ${want[i]}');
+    }
+  });
+
   test('processPage crops, enhances and reports status', () {
     final photo = makePhoto();
     final (page, status) = processPage(photo, mode: ScanMode.gray);
