@@ -110,7 +110,7 @@ void main() {
     expect(container.read(sessionProvider).map((p) => p.name), ['out_0.jpg', 'out_1.jpg', 'out_2.jpg']);
     expect(container.read(sessionProvider).every((p) => !p.pending), isTrue);
     for (final raw in [a, b, c]) {
-      expect(raw.existsSync(), isFalse, reason: 'the raw copy leaked in the cache dir');
+      expect(raw.existsSync(), isTrue, reason: 'raw must survive processing for re-crop and re-filter');
     }
   });
 
@@ -177,7 +177,66 @@ void main() {
     expect(pages[1].pending, isFalse, reason: 'a hand-cropped page is done');
     expect(pages[1].manualCorners, isNotNull);
     expect(pages[0].pending, isTrue, reason: 'the other page still waits its turn');
-    expect(b.existsSync(), isFalse);
+    expect(b.existsSync(), isTrue, reason: 'raw survives applyCorners for future re-crop');
+  });
+
+  test('processPending transfers the raw capture to the processed page', () async {
+    final fake = FakePipeline(tmp);
+    final container = ProviderContainer(overrides: [sessionProvider.overrideWith(() => fake)]);
+    addTearDown(container.dispose);
+    final s = container.read(sessionProvider.notifier);
+    final a = rawNamed('a');
+    s.addPending(a);
+    await s.processPending();
+    final page = container.read(sessionProvider)[0];
+    expect(page.rawFile, isNotNull, reason: 'rawFile must survive processPending');
+    expect(page.rawFile!.path, a.path);
+    expect(a.existsSync(), isTrue, reason: 'raw must not be deleted after processing');
+  });
+
+  test('reprocessAll re-renders every non-pending page from its raw', () async {
+    final fake = FakePipeline(tmp);
+    final container = ProviderContainer(overrides: [sessionProvider.overrideWith(() => fake)]);
+    addTearDown(container.dispose);
+    final s = container.read(sessionProvider.notifier);
+    s.addPending(rawNamed('a'));
+    s.addPending(rawNamed('b'));
+    await s.processPending();
+    expect(fake.processed.length, 2);
+    await s.reprocessAll();
+    expect(fake.processed.length, 4,
+        reason: 'reprocessAll must call processBytes once per existing page again');
+    expect(container.read(sessionProvider).every((p) => p.rawFile != null), isTrue);
+  });
+
+  test('removeAt after processPending deletes both the processed file and the raw', () async {
+    final fake = FakePipeline(tmp);
+    final container = ProviderContainer(overrides: [sessionProvider.overrideWith(() => fake)]);
+    addTearDown(container.dispose);
+    final s = container.read(sessionProvider.notifier);
+    final a = rawNamed('a');
+    s.addPending(a);
+    await s.processPending();
+    final page = container.read(sessionProvider)[0];
+    expect(a.existsSync(), isTrue);
+    expect(page.file.existsSync(), isTrue);
+    s.removeAt(0);
+    expect(a.existsSync(), isFalse, reason: 'removeAt must delete the raw capture');
+    expect(page.file.existsSync(), isFalse, reason: 'removeAt must delete the processed JPEG');
+  });
+
+  test('clear deletes both the raw and the processed file for every page', () async {
+    final fake = FakePipeline(tmp);
+    final container = ProviderContainer(overrides: [sessionProvider.overrideWith(() => fake)]);
+    addTearDown(container.dispose);
+    final s = container.read(sessionProvider.notifier);
+    final a = rawNamed('a');
+    s.addPending(a);
+    await s.processPending();
+    final processedFile = container.read(sessionProvider)[0].file;
+    s.clear();
+    expect(a.existsSync(), isFalse, reason: 'clear must delete the raw');
+    expect(processedFile.existsSync(), isFalse, reason: 'clear must delete the processed');
   });
 }
 

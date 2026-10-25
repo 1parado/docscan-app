@@ -18,9 +18,16 @@ class ScanPage {
     this.pending = false,
     this.dpi = 200,
     this.hintQuad,
+    this.rawFile,
   });
 
   final File file; // processed A4 JPEG, or the untouched capture while pending
+
+  /// The untouched capture. Survives after [file] is replaced so the user can
+  /// change the filter mode or re-crop without re-taking the photo. Null on a
+  /// pending page — [file] IS the raw until the pipeline runs.
+  File? rawFile;
+
   final String cropStatus; // cropped / kept / not_found / manual / pending
   List<List<double>>? manualCorners; // set by the adjust sheet
 
@@ -86,10 +93,38 @@ class ScanSession extends Notifier<List<ScanPage>> {
   }
 
   Future<void> setMode(ScanModeSetting m) async {
+    if (m == _modeSetting) return;
     _modeSetting = m;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('mode', m.name);
     ref.notifyListeners();
+    await reprocessAll();
+  }
+
+  /// Re-render every processed page from its raw capture in the current mode.
+  /// Called after [setMode]; safe to call manually from the result-page progress
+  /// UI so the caller can surface per-page progress.
+  Future<void> reprocessAll({void Function(int done, int total)? onProgress}) async {
+    final next = [...state];
+    var done = 0;
+    final total = next.where((p) => !p.pending && p.rawFile != null).length;
+    for (var i = 0; i < next.length; i++) {
+      final page = next[i];
+      final raw = page.rawFile;
+      if (page.pending || raw == null) continue;
+      if (!await raw.exists()) continue;
+      final fresh = await processBytes(
+        await raw.readAsBytes(),
+        manualCorners: page.manualCorners,
+      );
+      fresh.rawFile = raw;
+      if (page.file.path != raw.path) {
+        try { page.file.deleteSync(); } catch (_) {}
+      }
+      next[i] = fresh;
+      state = [...next];
+      onProgress?.call(++done, total);
+    }
   }
 
   bool _autoCrop = true;
@@ -125,6 +160,9 @@ class ScanSession extends Notifier<List<ScanPage>> {
   ///
   /// Sequentially on purpose: each page is its own isolate over a full-res
   /// photo, and a handful running at once is how a scanner gets killed.
+  ///
+  /// The raw capture is transferred to [ScanPage.rawFile] on the processed page
+  /// so a later filter change can re-render it without a new photo.
   Future<int> processPending({void Function(int done, int total)? onProgress}) async {
     final next = [...state];
     final total = next.where((p) => p.pending).length;
@@ -145,7 +183,8 @@ class ScanSession extends Notifier<List<ScanPage>> {
         manualCorners: page.manualCorners,
         quadHint: page.hintQuad,
       );
-      _discard(page);
+      // Transfer the raw reference; do NOT delete page.file — it IS the raw.
+      fresh.rawFile = page.rawFile ?? page.file;
       next[i] = fresh;
       if (fresh.cropStatus == 'not_found') missing++;
       state = [...next];
@@ -154,24 +193,37 @@ class ScanSession extends Notifier<List<ScanPage>> {
     return missing;
   }
 
-  /// Re-crop one page in place from the adjust sheet's corners, whether or not
-  /// it has been through the pipeline yet.
+  /// Re-crop one page from the adjust sheet's corners, re-rendering from the
+  /// raw capture so the new corners operate on untouched sensor pixels.
   Future<void> applyCorners(int index, List<List<double>> corners) async {
     final page = state[index];
+    final srcFile = page.rawFile ?? page.file;
     final fresh = await processBytes(
-      await page.file.readAsBytes(),
+      await srcFile.readAsBytes(),
       manualCorners: corners,
     );
-    replaceAt(index, fresh);
+    fresh.rawFile = srcFile;
+    final next = [...state];
+    next[index] = fresh;
+    // Delete only the old processed output, not the raw it came from.
+    if (!identical(page, fresh) && page.file.path != srcFile.path) {
+      try { page.file.deleteSync(); } catch (_) {}
+    }
+    state = next;
   }
 
   /// Swap a page without changing its position — re-cropping page 2 of 3 must
   /// not silently move it to the end of the exported PDF.
+  /// Only the old processed file is deleted; the raw is transferred.
   void replaceAt(int i, ScanPage page) {
     final next = [...state];
     if (i < 0 || i >= next.length) return;
     final old = next[i];
-    if (!identical(old, page)) _discard(old);
+    if (!identical(old, page) &&
+        old.file.path != page.rawFile?.path &&
+        old.file.path != page.file.path) {
+      try { old.file.deleteSync(); } catch (_) {}
+    }
     next[i] = page;
     state = next;
   }
@@ -179,7 +231,7 @@ class ScanSession extends Notifier<List<ScanPage>> {
   void removeAt(int i) {
     final next = [...state];
     final removed = next.removeAt(i);
-    _discard(removed);
+    _discardAll(removed);
     state = next;
   }
 
@@ -192,18 +244,21 @@ class ScanSession extends Notifier<List<ScanPage>> {
 
   void clear() {
     for (final p in state) {
-      _discard(p);
+      _discardAll(p);
     }
     state = [];
   }
 
-  /// Each page is a full A4 JPEG in the cache dir; dropping the list without
-  /// deleting the file leaves every scan ever taken sitting on the device.
-  static void _discard(ScanPage page) {
+  /// Delete the processed page and its raw source (if different).
+  static void _discardAll(ScanPage page) {
     try {
       page.file.deleteSync();
     } catch (_) {
       // The OS may already have reclaimed the cache; nothing left to clean.
+    }
+    final raw = page.rawFile;
+    if (raw != null && raw.path != page.file.path) {
+      try { raw.deleteSync(); } catch (_) {}
     }
   }
 

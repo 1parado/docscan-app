@@ -4,13 +4,11 @@ import '../design/tokens.dart';
 import '../scan/pipeline.dart';
 import '../state/scan_state.dart';
 
-/// Manual four-corner crop editor. Shows the RAW photo (re-decoded from the
-/// processed page's source is impossible — the raw was discarded — so the
-/// editor works on the processed A4 page and maps corners through the A4
-/// placement; good enough visually because the page is centered and scaled
-/// deterministically).
+/// Manual four-corner crop editor. Shows the raw capture so the user picks
+/// corners on the untouched sensor pixels; the result is passed to
+/// [ScanSession.applyCorners] which re-renders the pipeline from the same raw.
 ///
-/// Returns the corner quad in *processed page pixel coordinates* via
+/// Returns the corner quad in *raw photo pixel coordinates* via
 /// Navigator.pop, or null on cancel.
 class AdjustPage extends ConsumerStatefulWidget {
   const AdjustPage({super.key, required this.pageIndex});
@@ -36,7 +34,7 @@ class _AdjustPageState extends ConsumerState<AdjustPage> {
     // early init against the (1,1) placeholder leaves two corners collapsed
     // at the top-left (the "triangle" bug).
     () async {
-      final bytes = await page.file.readAsBytes();
+      final bytes = await (page.rawFile ?? page.file).readAsBytes();
       final decoded = decodeImage(bytes);
       if (!mounted) return;
       setState(() {
@@ -116,7 +114,7 @@ class _AdjustPageState extends ConsumerState<AdjustPage> {
                           left: topLeft.dx, top: topLeft.dy,
                           child: SizedBox(
                             width: dispW, height: dispH,
-                            child: Image.file(page.file, fit: BoxFit.contain),
+                            child: Image.file(page.rawFile ?? page.file, fit: BoxFit.contain),
                           ),
                         ),
                         if (_loaded)
