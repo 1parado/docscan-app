@@ -57,8 +57,12 @@ void main() {
     return container;
   }
 
-  String order(ProviderContainer container) =>
-      container.read(sessionProvider).map((p) => p.name).join();
+  /// The list as one readable order string, with the extension dropped so
+  /// 'p0.p2' means page 0 then page 2 rather than two half-names.
+  String order(ProviderContainer container) => container
+      .read(sessionProvider)
+      .map((p) => p.name.replaceAll('.jpg', ''))
+      .join('.');
 
   testWidgets('the row carries one labelled control per action', (tester) async {
     final handle = tester.ensureSemantics();
@@ -78,7 +82,7 @@ void main() {
     await tester.tap(find.bySemanticsLabel('删除第 2 页'));
     await tester.pump();
 
-    expect(order(container), 'p0.jsp2.jpg');
+    expect(order(container), 'p0.p2');
     expect(pages[1].file.existsSync(), isFalse, reason: 'the dropped JPEG leaked');
     expect(pages[0].file.existsSync(), isTrue);
     expect(pages[2].file.existsSync(), isTrue);
@@ -93,7 +97,7 @@ void main() {
     await tester.tap(find.bySemanticsLabel('第 2 页前移'));
     await tester.pump();
 
-    expect(order(container), 'p1.jsp0.jsp2.jpg');
+    expect(order(container), 'p1.p0.p2');
     expect(pages.every((p) => p.file.existsSync()), isTrue,
         reason: 'moving a page must not delete anything');
     handle.dispose();
@@ -107,7 +111,7 @@ void main() {
     await tester.tap(find.bySemanticsLabel('第 2 页后移'));
     await tester.pump();
 
-    expect(order(container), 'p0.jsp2.jsp1.jpg');
+    expect(order(container), 'p0.p2.p1');
     handle.dispose();
   });
 
@@ -119,7 +123,7 @@ void main() {
     await tester.tap(find.bySemanticsLabel('第 1 页前移'));
     await tester.pump();
 
-    expect(order(container), 'p0.jsp1.jsp2.jpg', reason: 'the first page has no earlier place');
+    expect(order(container), 'p0.p1.p2', reason: 'the first page has no earlier place');
     expect(find.byIcon(Icons.chevron_left), findsOneWidget,
         reason: 'the disabled arrow still holds its slot so the row does not jump');
     handle.dispose();
