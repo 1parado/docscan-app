@@ -116,6 +116,77 @@ void main() {
     expect(sum / n, closeTo(199, 8));
   });
 
+  test('removeShadow flattens a shaded, tinted page', () {
+    img.Image shaded() {
+      final page = img.Image(width: 400, height: 500, numChannels: 3);
+      for (var y = 0; y < page.height; y++) {
+        // A lamp falling off down the page, from a bulb that is not white.
+        final light = 1.0 - 0.45 * (y / page.height);
+        for (var x = 0; x < page.width; x++) {
+          page.setPixelRgb(x, y, (232 * light).round(), (228 * light).round(), (196 * light).round());
+        }
+      }
+      for (final y in [120, 250, 400]) {
+        img.drawLine(page, x1: 40, y1: y, x2: 360, y2: y, color: img.ColorUint8.rgb(38, 38, 42));
+      }
+      return page;
+    }
+
+    final flat = removeShadow(shaded());
+    int meanAt(int y, {required bool paper}) {
+      var sum = 0, n = 0;
+      for (var x = 40; x < 360; x++) {
+        final v = flat.getPixel(x, y).r.toInt();
+        if (v > 128 == paper) {
+          sum += v;
+          n++;
+        }
+      }
+      expect(n, greaterThan(80), reason: 'row $y has too few ${paper ? 'paper' : 'ink'} pixels');
+      return (sum / n).round();
+    }
+
+    final topPaper = meanAt(60, paper: true);
+    final bottomPaper = meanAt(460, paper: true);
+    expect((topPaper - bottomPaper).abs(), lessThan(14), reason: 'the lamp gradient survived');
+    // The cast was 36 levels of red over blue; dividing by the background
+    // estimate has to take it out rather than just brightening the page.
+    var r = 0, b = 0, n = 0;
+    for (var y = 0; y < flat.height; y += 7) {
+      for (var x = 0; x < flat.width; x += 7) {
+        final p = flat.getPixel(x, y);
+        if (p.r > 128) {
+          r += p.r.toInt();
+          b += p.b.toInt();
+          n++;
+        }
+      }
+    }
+    expect(((r - b) / n).abs(), lessThan(12), reason: 'the page is still tinted');
+    expect(meanAt(250, paper: false), lessThan(90), reason: 'the ink washed out with the shadow');
+  });
+
+  test('auto-levels ignore the desk that slipped into the crop', () {
+    final page = img.Image(width: 300, height: 300, numChannels: 3);
+    img.fill(page, color: img.ColorUint8.rgb(238, 236, 232));
+    for (var y = 286; y < 300; y++) {
+      for (var x = 0; x < 300; x++) {
+        page.setPixelRgb(x, y, 8, 8, 8); // a black band along the bottom edge
+      }
+    }
+    final flat = removeShadow(page);
+    var sum = 0, n = 0;
+    for (var y = 0; y < 280; y += 2) {
+      for (var x = 0; x < 300; x += 2) {
+        sum += flat.getPixel(x, y).r.toInt();
+        n++;
+      }
+    }
+    // Four percent of the page is near-black. Stretching to global min/max maps
+    // that to 0 and drags the paper down with it; a percentile band does not.
+    expect(sum / n, greaterThan(220));
+  });
+
   test('jpeg round-trip keeps an image', () {
     final photo = makePhoto();
     final (page, _) = processPage(photo, mode: ScanMode.gray);

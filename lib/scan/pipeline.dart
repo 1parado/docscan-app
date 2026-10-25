@@ -56,6 +56,18 @@ int _indexOfMax(List<num> xs) {
 double _dist(List<double> a, List<double> b) =>
     math.sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]));
 
+/// The packed bytes of an 8-bit image and its row stride.
+///
+/// Every filter in this file ran through `getPixel`/`setPixelRgb`, which
+/// allocates a Color per call — eight million of them per page, and the reason
+/// one full-resolution page spent ten seconds in enhancement instead of one.
+/// 8-bit planes are stored tightly (`rowStride == width * numChannels`).
+(Uint8List, int) _plane(img.Image im) {
+  final d = im.data!;
+  assert(d.format == img.Format.uint8);
+  return (d.buffer.asUint8List(), d.rowStride);
+}
+
 /// Find the document quad in a grayscale-or-RGB image.
 /// Returns [TL, TR, BR, BL] each [x, y] in source pixels, or null.
 ///
@@ -357,80 +369,121 @@ List<double> _homography(
   return [for (var i = 0; i < 8; i++) m[i][8] / m[i][i]];
 }
 
-/// Grayscale max-filter (dilate) over a square kernel — the image package
+/// Max-filter (dilate) over a square kernel, per channel — the image package
 /// has none built in.
+///
+/// Per channel is the point: this runs on the background estimate, which the
+/// white balance later divides by. Writing every channel from the red plane
+/// flattened the estimate to grey, so the light's *colour* survived the whole
+/// shadow pass and the page came out tinted.
 void dilateMax(img.Image im, int r) {
-  final copy = img.Image.from(im);
-  final c = copy.data!;
-  final o = im.data!;
-  for (var y = 0; y < im.height; y++) {
-    for (var x = 0; x < im.width; x++) {
-      var best = -1;
-      for (var dy = -r; dy <= r; dy++) {
-        final yy = (y + dy).clamp(0, im.height - 1);
-        for (var dx = -r; dx <= r; dx++) {
-          final xx = (x + dx).clamp(0, im.width - 1);
-          final v = c.getPixel(xx, yy).r.toInt();
-          if (v > best) best = v;
+  final (o, stride) = _plane(im);
+  final copy = Uint8List.fromList(o);
+  final w = im.width, h = im.height, nc = im.data!.numChannels;
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      final y0 = math.max(0, y - r), y1 = math.min(h - 1, y + r);
+      final x0 = math.max(0, x - r), x1 = math.min(w - 1, x + r);
+      for (var ch = 0; ch < nc; ch++) {
+        var best = 0;
+        for (var yy = y0; yy <= y1; yy++) {
+          var p = yy * stride + x0 * nc + ch;
+          for (var xx = x0; xx <= x1; xx++, p += nc) {
+            if (copy[p] > best) best = copy[p];
+          }
         }
+        o[y * stride + x * nc + ch] = best;
       }
-      o.setPixelRgb(x, y, best, best, best);
     }
   }
 }
 
-/// Port of enhance.remove_shadow: background is low-frequency, so the dilate
-/// + median chain runs on a quarter-scale copy and is upscaled once.
-img.Image removeShadow(img.Image rgb) {
+/// Flatten the illumination and take the light's colour out of the page, so a
+/// scan reads as paper instead of as a photo of paper in a dim room.
+///
+/// The background is low-frequency, so it is estimated on a quarter-scale copy
+/// (per-channel max filter, then a blur with median-21's footprint) and upscaled
+/// once. Each pixel is then *divided* by that estimate: the same operation drops
+/// a shadow's level and its tint, which the old `255 - |plane - bg|` could not
+/// do — an absolute difference is symmetric, so it brightened ink exactly as
+/// much as it brightened paper.
+img.Image removeShadow(img.Image rgb, {double gainLimit = 3.0}) {
   final w = rgb.width, h = rgb.height;
   final sw = math.max(1, w ~/ 4), sh = math.max(1, h ~/ 4);
   final small = img.copyResize(rgb, width: sw, height: sh, interpolation: img.Interpolation.average);
-  // Background estimate = dilate(7) then median(21) on the web. The image
-  // package has no median filter, so: dilate (max filter — this is what
-  // brightens paper out of the shadow; skipping it was why app output kept
-  // the gray cast), then a blur wide enough to match median-21's footprint
-  // (sigma ~7 ≈ 2/3·10 → radius 10).
   dilateMax(small, 4);
   final bg = img.gaussianBlur(img.Image.from(small), radius: 10);
   final bgUp = img.copyResize(bg, width: w, height: h, interpolation: img.Interpolation.linear);
 
-  final out = img.Image.from(rgb);
-  final s = rgb.data!;
-  final bgu = bgUp.data!;
-  final o = out.data!;
+  final (src, sStride) = _plane(rgb);
+  final (b, bStride) = _plane(bgUp);
+  final norm = Uint8List(w * h * 3);
+  final hist = Uint32List(256);
+  final limit = (255 * gainLimit).round();
 
-  // Per-channel normalization: diff = 255 - |plane - bg|, then stretch.
-  final minV = [255, 255, 255], maxV = [0, 0, 0];
-  final diffs = Uint8List(w * h * 3);
   for (var y = 0; y < h; y++) {
+    final row = y * sStride;
+    final brow = y * bStride;
     for (var x = 0; x < w; x++) {
-      final sp = s.getPixel(x, y);
-      final bp = bgu.getPixel(x, y);
+      final p = row + x * 3;
       for (var ch = 0; ch < 3; ch++) {
-        final plane = [sp.r, sp.g, sp.b][ch].toInt();
-        final bgv = [bp.r, bp.g, bp.b][ch].toInt();
-        final d = (255 - (plane - bgv).abs()).clamp(0, 255);
-        diffs[(y * w + x) * 3 + ch] = d;
-        if (d < minV[ch]) minV[ch] = d;
-        if (d > maxV[ch]) maxV[ch] = d;
+        // A gain ceiling keeps a genuinely dark patch from having its sensor
+        // noise multiplied into confetti.
+        final gain = math.min(limit, 255 * 255 ~/ math.max(1, b[brow + x * 3 + ch]));
+        final v = (src[p + ch] * gain) ~/ 255;
+        norm[p + ch] = v > 255 ? 255 : v;
       }
+      hist[(norm[p] * 77 + norm[p + 1] * 150 + norm[p + 2] * 29) >> 8]++;
     }
   }
+
+  // One band, taken from luminance, drives all three channels: stretching each
+  // channel to its own extremes is what painted a yellow cast over white paper
+  // whenever the desk under the page was not neutral.
+  final (lo, hi) = _percentileBand(hist, w * h);
+  final out = img.Image(width: w, height: h, numChannels: 3);
+  final (o, oStride) = _plane(out);
+  final span = hi - lo;
+  if (span < 24) {
+    // Nothing to gain: the page is already flat, and stretching a handful of
+    // levels would only amplify the noise floor.
+    for (var p = 0, end = w * h * 3; p < end; p++) {
+      o[p] = norm[p];
+    }
+    return out;
+  }
+  final scale = 255 / span;
   for (var y = 0; y < h; y++) {
+    final row = y * oStride;
     for (var x = 0; x < w; x++) {
-      final idx = (y * w + x) * 3;
-      final r = _stretch(diffs[idx], minV[0], maxV[0]);
-      final g = _stretch(diffs[idx + 1], minV[1], maxV[1]);
-      final b = _stretch(diffs[idx + 2], minV[2], maxV[2]);
-      o.setPixelRgb(x, y, r, g, b);
+      final p = row + x * 3;
+      for (var ch = 0; ch < 3; ch++) {
+        final v = ((norm[p + ch] - lo) * scale).round();
+        o[p + ch] = v < 0 ? 0 : (v > 255 ? 255 : v);
+      }
     }
   }
   return out;
 }
 
-int _stretch(int v, int min, int max) {
-  if (max <= min) return v;
-  return ((v - min) * 255 ~/ (max - min)).clamp(0, 255);
+/// The value band that holds the middle 98% of the mass, for auto-levels.
+/// Global min/max — what this used to do — let one dark desk corner or one
+/// specular highlight collapse the contrast of the whole page.
+(int, int) _percentileBand(Uint32List hist, int total) {
+  int at(double q) {
+    final target = (total * q).ceil();
+    var acc = 0;
+    for (var v = 0; v < 256; v++) {
+      acc += hist[v];
+      if (acc >= target) return v;
+    }
+    return 255;
+  }
+
+  final lo = at(0.01);
+  var hi = at(0.99);
+  if (hi <= lo) hi = 255;
+  return (lo, hi);
 }
 
 enum ScanMode { color, gray, bw }
