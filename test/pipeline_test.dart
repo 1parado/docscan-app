@@ -187,6 +187,93 @@ void main() {
     expect(sum / n, greaterThan(220));
   });
 
+  test('color mode sharpens edges without crisp-ifying the noise floor', () {
+    // A two-level dither is the worst case for an ungated 3x3 sharpen: every
+    // pixel looks like an edge to the kernel, so ±2 levels of sensor noise come
+    // back as a visible cross-hatch on what should be blank paper.
+    img.Image noisy() {
+      final page = img.Image(width: 300, height: 200, numChannels: 3);
+      for (var y = 0; y < page.height; y++) {
+        for (var x = 0; x < page.width; x++) {
+          final v = ((x + y) & 1) == 0 ? 232 : 228;
+          page.setPixelRgb(x, y, v, v, v);
+        }
+      }
+      img.fillRect(page, x1: 40, y1: 60, x2: 260, y2: 90, color: img.ColorUint8.rgb(40, 40, 40));
+      return page;
+    }
+
+    final out = enhanceDocument(noisy(), mode: ScanMode.color);
+    var min = 255, max = 0;
+    for (var x = 10; x < 30; x++) {
+      for (var y = 10; y < 50; y++) {
+        final v = out.getPixel(x, y).r.toInt();
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+    }
+    expect(max - min, lessThan(9), reason: 'the sharpen amplified the dither into a pattern');
+    expect(out.getPixel(150, 75).r.toInt(), lessThan(90), reason: 'the ink got washed out');
+  });
+
+  test('bw mode closes speckle and pinholes but keeps the stroke', () {
+    final page = img.Image(width: 300, height: 200, numChannels: 3);
+    img.fill(page, color: img.ColorUint8.rgb(240, 238, 234));
+    img.fillRect(page, x1: 30, y1: 100, x2: 270, y2: 106, color: img.ColorUint8.rgb(30, 30, 30));
+    for (final (x, y) in [(60, 40), (200, 60), (140, 160)]) {
+      page.setPixelRgb(x, y, 20, 20, 20); // lone specks on blank paper
+    }
+    page.setPixelRgb(150, 103, 245, 245, 245); // a pinhole inside the stroke
+
+    final out = enhanceDocument(page, mode: ScanMode.bw);
+    int ink(int x, int y) => out.getPixel(x, y).r.toInt() < 128 ? 0 : 255;
+
+    var specks = 0;
+    for (var y = 1; y < out.height - 1; y++) {
+      for (var x = 1; x < out.width - 1; x++) {
+        if (ink(x, y) != 0) continue;
+        var neighbours = 0;
+        for (var dy = -1; dy <= 1; dy++) {
+          for (var dx = -1; dx <= 1; dx++) {
+            if (dx != 0 || dy != 0) neighbours += ink(x + dx, y + dy) == 0 ? 1 : 0;
+          }
+        }
+        if (neighbours == 0) specks++;
+      }
+    }
+    expect(specks, 0, reason: 'lone dark pixels survived the binarise');
+    expect(ink(150, 103), 0, reason: 'the pinhole stayed open');
+    var stroke = 0;
+    for (var x = 40; x < 260; x++) {
+      if (ink(x, 103) == 0) stroke++;
+    }
+    expect(stroke, greaterThan(180), reason: 'the stroke broke up');
+  });
+
+  test('grey mode lifts faint pencil off the paper', () {
+    final page = img.Image(width: 300, height: 200, numChannels: 3);
+    img.fill(page, color: img.ColorUint8.rgb(236, 235, 232));
+    // Two blocks of graphite so light the global stretch alone cannot find them.
+    for (var y = 40; y < 70; y++) {
+      for (var x = 40; x < 130; x++) {
+        page.setPixel(x, y, img.ColorUint8.rgb(226, 225, 222));
+      }
+    }
+    for (var y = 120; y < 150; y++) {
+      for (var x = 40; x < 130; x++) {
+        page.setPixel(x, y, img.ColorUint8.rgb(218, 217, 214));
+      }
+    }
+
+    final out = enhanceDocument(page, mode: ScanMode.gray);
+    int luma(int x, int y) => out.getPixel(x, y).r.toInt();
+    final paper = luma(250, 100);
+    final faint = luma(85, 55);
+    final darker = luma(85, 135);
+    expect(paper - faint, greaterThan(18), reason: 'the faint block is still invisible');
+    expect(paper - darker, greaterThan(paper - faint), reason: 'the two blocks inverted');
+  });
+
   test('jpeg round-trip keeps an image', () {
     final photo = makePhoto();
     final (page, _) = processPage(photo, mode: ScanMode.gray);
