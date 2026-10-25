@@ -193,7 +193,9 @@ module.exports = function acceptance() {
   // this run created is the run's to remove.
   s.test('A12 exported test documents are cleaned up', () => {
     let deleted = 0;
-    for (const title of saved) deleted += f.deleteSeeded(title);
+    // Every title here was read off the name field, so match whole titles:
+    // "10月25日 扫描 3" is a prefix of "10月25日 扫描 30".
+    for (const title of saved) deleted += f.deleteSeeded(title, { exact: true });
     if (deleted === 0) return saved.length ? `nothing of ${saved.join(', ')} was listed` : 'nothing exported';
     return `${deleted} of ${saved.length} test documents deleted`;
   });

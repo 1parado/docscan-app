@@ -54,6 +54,12 @@ Seeding and exporting write into the phone's real library, so `scale` ends with
 S11 and `acceptance` with A12, both of which delete exactly what their own run
 created through 多选 → 删除 — the same path a user has, which that also proves.
 
+`flows.deleteSeeded` will not delete on its own arithmetic. It stops unless the
+toolbar counter says `已选 N` for the N rows it tapped, the confirm dialog names
+the same N, and the library count drops by exactly N. Cases that know the whole
+title pass `{exact: true}`: auto-generated names are prefixes of each other, so
+`10月25日 扫描 3` also matches document 30, which may be the user's.
+
 ## What "SKIP" means here
 
 The installed release APK is not debuggable, so `run-as` cannot reach the app's
@@ -76,6 +82,29 @@ carry no labels, so `picker.cjs` switches to list view and selects by filename �
 that is what lets a test deliberately feed the tilted photo or the edgeless one.
 So "import N pages" is N trips, and the app navigates to the result page after
 each one; `flows.importPages` walks back to the session view in between.
+
+Three things about that list are measurable and each one broke an import:
+
+- A row that has fallen off either edge reports `center.y = 0`. Tapping 0 hits
+  the status bar, the ROM swallows it, and the picker just stays in focus. Rows
+  are therefore only accepted inside a tappable band (below the toolbar, above
+  the gesture bar).
+- A full-screen fling moves about four rows, so a target can jump from just
+  below the fold to above the header without ever being in the band. Locating a
+  row nudges two rows at a time.
+- The direction to nudge is not knowable from the clipped row — `y = 0` does not
+  say which edge it fell off, and the recent group cannot scroll the other way
+  at all. So the direction comes from the list itself and flips whenever a nudge
+  moves nothing.
+
+`uiautomator dump` also refuses for a second while the picker animates. Reading
+the tree during *navigation* tolerates that and retries; assertions still use
+`driver.dump()`, which throws rather than letting an empty tree read as "that
+label is absent".
+
+With all three handled, three consecutive trips verify at the first tap each:
+`已拍 1 页` → `已拍 2 页` → `已拍 3 页`, ~10.8s for the first (cold picker) and
+~2.5s for the rest.
 
 A picker left open from an earlier run stays stacked inside the app's own task, so
 `am start` re-raises the picker and the app looks dead. Every `Suite` starts with

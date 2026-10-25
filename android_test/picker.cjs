@@ -49,7 +49,7 @@ function open(albumLabel, { attempts = 3, waitMs = 15000 } = {}) {
     // (`if (_busy) return`), so a single tap can legitimately do nothing.
     d.tap(albumLabel);
     if (waitForPicker(waitMs)) return { opened: true, pkg: d.foregroundPackage(), tries: i + 1 };
-    last = d.visibleLabels();
+    last = (peek() ?? d.visibleLabels()).map((n) => n.desc || n.text).filter(Boolean);
     d.sleep(4000);
   }
   return {
@@ -80,8 +80,9 @@ function grant() {
  * in grid mode, 网格视图 means list mode is already on.
  */
 function ensureList() {
-  for (let i = 0; i < 3; i++) {
-    const nodes = d.dump();
+  for (let i = 0; i < 5; i++) {
+    const nodes = peek();
+    if (!nodes) continue;
     if (d.find('网格视图', nodes)) return { list: true };
     const toList = d.find('列表视图', nodes);
     if (!toList) return { list: false, reason: 'no view-mode toggle on this picker' };
@@ -97,17 +98,79 @@ const rows = (nodes) =>
     .map((n) => ({ name: n.text, y: n.center.y }));
 
 /**
- * Scroll the list until a row whose name matches `re` is visible.
- * One swipe per iteration, capped, so a missing fixture says "scrolled N times
- * and still no match" instead of hanging.
+ * Read the tree, but give up quietly. The picker window is briefly undumpable
+ * while it animates, and `d.dump()` throws on purpose so that an assertion
+ * cannot read an empty tree as "that label is absent" — here a missed read is
+ * just a missed read, and the loop tries again.
  */
-function findRow(re, { scrolls = 8 } = {}) {
-  for (let i = 0; i <= scrolls; i++) {
-    const nodes = d.dump();
-    const hit = rows(nodes).find((r) => re.test(r.name));
+function peek({ retries = 3 } = {}) {
+  try {
+    return d.dump({ retries });
+  } catch (_) {
+    d.sleep(1200);
+    return null;
+  }
+}
+
+/**
+ * Rows are only tappable between the toolbar and the gesture bar. uiautomator
+ * reports a row that has fallen off either edge of the list viewport with a
+ * degenerate centre (y = 0), so matching on name alone lets a tap be aimed at
+ * the status bar — which the ROM swallows and the picker just stays open.
+ */
+const band = () => {
+  const { h } = d.screenSize();
+  return { top: 160, bottom: h - 260 };
+};
+
+const inBand = (y) => {
+  const b = band();
+  return y >= b.top && y <= b.bottom;
+};
+
+/** The match for `re` that can actually be tapped, out of every node that names it. */
+function tappableRow(nodes, re) {
+  const matches = rows(nodes).filter((r) => re.test(r.name));
+  return matches.find((r) => inBand(r.y)) ?? null;
+}
+
+/**
+ * Two rows at a time: a full-screen fling moves ~4 rows, and that is how a
+ * target jumps from just below the fold to above the header without ever being
+ * inside the band. A small step can never skip an 8-row window.
+ */
+const nudge = (dir) => {
+  const { w, h } = d.screenSize();
+  const y = Math.round(h * 0.55);
+  d.swipe(Math.round(w / 2), y, Math.round(w / 2), y - (dir === 'up' ? 440 : -440), 320);
+};
+
+const rowSignature = (nodes) => rows(nodes).map((r) => `${r.name}:${r.y}`).join('|');
+
+/**
+ * Scroll the list until a row whose name matches `re` sits inside the tappable
+ * band, capped so a missing fixture says "nudged N times and still no match"
+ * instead of hanging. Which way to scroll is decided by the list, not by the
+ * clipped row: y = 0 does not say which edge it fell off, and the recent group
+ * cannot scroll up at all, so the direction flips whenever a nudge moves
+ * nothing.
+ */
+function findRow(re, { nudges = 14 } = {}) {
+  let dir = 'up';
+  let prev = null;
+  for (let i = 0; i <= nudges; i++) {
+    const nodes = peek();
+    if (!nodes) continue;
+    const hit = tappableRow(nodes, re);
     if (hit) return hit;
-    d.scrollScreen('up');
-    d.sleep(900);
+    const stray = rows(nodes).find((r) => re.test(r.name));
+    const sig = rowSignature(nodes);
+    if (stray && stray.y > 0 && stray.y < band().top) dir = 'down';
+    else if (prev !== null && sig === prev) dir = dir === 'up' ? 'down' : 'up';
+    else dir = 'up';
+    prev = sig;
+    nudge(dir);
+    d.sleep(700);
   }
   return null;
 }
@@ -118,11 +181,13 @@ function findRow(re, { scrolls = 8 } = {}) {
  * open with focus nowhere near the app. So only tap once the same row sits at
  * the same y in two consecutive dumps.
  */
-function steadyRow(re, { tries = 6 } = {}) {
+function steadyRow(re, { tries = 8 } = {}) {
   let prev = null;
   for (let i = 0; i < tries; i++) {
     d.sleep(450);
-    const hit = rows(d.dump()).find((r) => re.test(r.name));
+    const nodes = peek();
+    if (!nodes) continue;
+    const hit = tappableRow(nodes, re);
     if (!hit) return null;
     if (prev && Math.abs(hit.y - prev) <= 4) return hit;
     prev = hit.y;
@@ -134,7 +199,10 @@ function steadyRow(re, { tries = 6 } = {}) {
  * The row whose name matches `re` in a dump taken right now — a y saved
  * earlier is stale the moment the list glides.
  */
-const rowNow = (re) => rows(d.dump()).find((r) => re.test(r.name)) ?? null;
+const rowNow = (re) => {
+  const nodes = peek();
+  return nodes ? tappableRow(nodes, re) : null;
+};
 
 /**
  * The clickable row container that `y` falls inside. Tapping the title text's
@@ -161,9 +229,10 @@ function tapRow(re) {
   const found = steadyRow(re) ?? rowNow(re);
   if (!found) return null;
   const screen = d.screenSize();
-  const hit = clickableRow(d.dump(), found.y);
+  const nodes = peek() ?? [];
+  const hit = clickableRow(nodes, found.y);
   d.tapPoint(hit ? hit.center.x : Math.round(screen.w / 2), hit ? hit.center.y : found.y);
-  return { name: found.name, y: found.y };
+  return { name: found.name, y: found.y, container: hit ? hit.center.y : null };
 }
 
 /** Open the picker and get it into list view — the state every tap needs. */
@@ -179,9 +248,12 @@ function openPicker(album) {
 function finish(picked, attempts, settleMs) {
   const t0 = Date.now();
   while (Date.now() - t0 < settleMs) {
-    const labels = d.visibleLabels();
-    if (labels.some((l) => /保存到文档|导出 PDF|未检测到边缘|已拍/.test(l))) {
-      return { ok: true, picked: picked?.name ?? null, attempts, ms: Date.now() - t0, labels };
+    const nodes = peek();
+    if (nodes) {
+      const labels = nodes.map((n) => n.desc || n.text).filter(Boolean);
+      if (labels.some((l) => /保存到文档|导出 PDF|未检测到边缘|已拍/.test(l))) {
+        return { ok: true, picked: picked?.name ?? null, attempts, ms: Date.now() - t0, labels };
+      }
     }
     d.sleep(1000);
   }
@@ -213,8 +285,8 @@ function takeOne(re, { album = '相册', settleMs = 90000, taps = 3 } = {}) {
   return {
     ok: false,
     stage: 'handback',
-    detail: `${taps} taps on ${tapped?.name ?? re} left the picker in focus`,
-    labels: d.visibleLabels(),
+    detail: `${taps} taps on ${tapped?.name ?? re} left the picker in focus (y=${tapped?.y})`,
+    labels: (peek() ?? []).map((n) => n.desc || n.text).filter(Boolean),
   };
 }
 
@@ -232,4 +304,18 @@ if (require.main === module) {
   }
 }
 
-module.exports = { open, grant, ensureList, findRow, rows, rowNow, clickableRow, tapRow, takeOne, cancel, isPicker };
+module.exports = {
+  open,
+  grant,
+  ensureList,
+  findRow,
+  rows,
+  rowNow,
+  tappableRow,
+  inBand,
+  clickableRow,
+  tapRow,
+  takeOne,
+  cancel,
+  isPicker,
+};
