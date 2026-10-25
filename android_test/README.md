@@ -80,8 +80,11 @@ never proven cannot support a claim about what happened after it.
 multi-select: one tap commits one image and closes the picker. Grid thumbnails
 carry no labels, so `picker.cjs` switches to list view and selects by filename —
 that is what lets a test deliberately feed the tilted photo or the edgeless one.
-So "import N pages" is N trips, and the app navigates to the result page after
-each one; `flows.importPages` walks back to the session view in between.
+So "import N pages" is N trips: each one queues the raw photo and stays on the
+session view, so `flows.importPages` only has to keep the picker honest — the
+edge warp runs later, when 下一步 is pressed, and that is what
+`flows.openResult` waits for (one isolate per page, so the export screen appears
+only after the whole queue has run).
 
 Three things about that list are measurable and each one broke an import:
 

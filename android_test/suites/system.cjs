@@ -215,6 +215,9 @@ module.exports = function system() {
     must(before.markers[0] < before.badges[1], 'the edgeless page is not in the first slot');
     must(f.longPressPage(1) != null, 'page badge "2" not found on the export strip');
     must(f.tapPageAction(UI.PAGES.prev(2)), 'the ◀ handle for page 2 was not tappable');
+    // The marker yields to the handle row while a page is held for editing, so
+    // leave that mode before measuring where the marker ended up.
+    f.longPressPage(0);
     const after = f.stripState();
     const shift = after.markers[0] - before.markers[0];
     must(after.markers.length === 1, `the move left ${after.markers.length} markers on screen`);
