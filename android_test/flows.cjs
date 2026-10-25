@@ -382,6 +382,24 @@ function deleteDoc(title) {
   return after;
 }
 
+/** True when `input text` can type the string at all — Chinese cannot. */
+const typable = (s) => /^[\x20-\x7e]*$/.test(s);
+
+/**
+ * The first row whose read-back title satisfies `matches`, as `{index, title}`.
+ * This is the only identification available for a title that cannot be typed
+ * into the name filter, so it stops at the first hit rather than reading the
+ * whole screen back.
+ */
+function findRow(matches) {
+  const rows = rowAnchors();
+  for (let i = 0; i < rows.length; i++) {
+    const title = rowTitle(i);
+    if (title != null && matches(title)) return { i, title };
+  }
+  return null;
+}
+
 /**
  * Delete every document titled `prefix`, one at a time, through the Docs tab's
  * own per-row delete. Suites that create documents have to remove them again —
@@ -390,37 +408,32 @@ function deleteDoc(title) {
  * `exact` matters for auto-generated names: "10月25日 扫描 3" is a prefix of
  * "10月25日 扫描 30", so a prefix match here would delete the user's own
  * document. Callers that know the whole title pass `{exact: true}`.
+ *
+ * An auto-generated name is Chinese, and `input text` cannot type Chinese, so
+ * for those the filter is unavailable and every visible row is read back
+ * instead. That still reaches the run's own documents and only those: the list
+ * is newest-first, so what this run created is on the first page and whatever
+ * the user had is not.
  */
 function deleteSeeded(prefix, { rounds = 8, exact = false } = {}) {
   const matches = (t) => (exact ? t === prefix : t.startsWith(prefix));
+  const filtered = typable(prefix);
   let deleted = 0;
   for (let round = 0; round < rounds; round++) {
     openDocs();
     d.sleep(900);
-    if (!setFilter(prefix)) {
-      setFilter('');
-      break;
-    }
-    // Read every candidate's title back from its rename sheet: the filter is a
-    // substring match, and "10月25日 扫描 3" is a prefix of "…扫描 30".
-    const rows = rowAnchors();
-    let target = null;
-    for (let i = 0; i < rows.length; i++) {
-      const t = rowTitle(i);
-      if (t != null && matches(t)) {
-        target = { i, title: t };
-        break;
-      }
-    }
+    if (filtered && !setFilter(prefix)) break;
+    // The filter is a substring match, so confirm each candidate's title from
+    // its own rename sheet before pointing a delete at it.
+    const target = findRow(matches);
     if (!target) {
-      setFilter('');
+      if (filtered) setFilter('');
       break;
     }
-    const row = rowAnchors()[target.i];
-    deleteRowAt(row, target.title);
+    deleteRowAt(rowAnchors()[target.i], target.title);
     deleted++;
   }
-  setFilter('');
+  if (filtered) setFilter('');
   home();
   return deleted;
 }
@@ -450,6 +463,7 @@ module.exports = {
   locateDoc,
   deleteDoc,
   deleteRowAt,
+  findRow,
   hideKeyboard,
   settled,
   waitSettled,

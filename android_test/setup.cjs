@@ -55,9 +55,16 @@ function runAs(cmd) {
   return d.adb(['shell', 'run-as', d.PKG, ...cmd]);
 }
 
-/** Paths under the app's private files dir, when the build permits it. */
+/** Where the library really lives: path_provider gives Android `app_flutter`, not `files`. */
+const DOCS_ROOTS = ['app_flutter/docs', 'files/docs'];
+
+/** Paths under the app's private docs dir, when the build permits it. */
 function appDocsListing() {
-  return runAs(['find', 'files/docs', '-maxdepth', '2', '-type', 'f']).split('\n').filter(Boolean);
+  for (const root of DOCS_ROOTS) {
+    const found = runAs(['find', root, '-maxdepth', '2', '-type', 'f']).split('\n').filter(Boolean);
+    if (found.length) return found;
+  }
+  return [];
 }
 
 function pullAppFile(remoteRel, local) {

@@ -107,7 +107,7 @@ module.exports = function acceptance() {
   s.test('A7 exported PDF really holds those pages', () => {
     if (!setup.isDebuggable()) return s.skip('release build: run-as cannot reach files/docs');
     const found = setup.appDocsListing().filter((p) => p.endsWith('doc.pdf'));
-    must(found.length, 'no doc.pdf visible under files/docs');
+    must(found.length, 'no doc.pdf under app_flutter/docs or files/docs');
     const local = path.join(s.dir, 'sample.pdf');
     setup.pullAppFile(found[0], local);
     const buf = fs.readFileSync(local);
