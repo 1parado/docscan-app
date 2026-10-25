@@ -141,19 +141,24 @@ function importOnePage(want, { perPageMs = 90000, attempts = 3 } = {}) {
     if (!ensureHome()) return { ok: false, stage: 'home', detail: `cannot reach home before importing ${want}` };
     if (!waitSettled()) return { ok: false, stage: 'busy', detail: `app never went idle before ${want}` };
     const before = sessionCount() ?? 0;
-    const r = picker.takeOne(new RegExp(want), { album: UI.HOME.album, settleMs: perPageMs });
+    // takeOne already re-taps once when the picker keeps focus; the second
+    // layer here is for the case where the whole picker opened against a busy
+    // app, which needs closing and re-opening rather than another tap.
+    const r = picker.takeOne(new RegExp(want), { album: UI.HOME.album, settleMs: perPageMs, taps: 2 });
     if (r.ok) {
-      // The app opens the export screen by itself once the album import is done,
-      // and 相册 only exists on the home view — so step back out of it.
-      if (UI.onScreen(d.dump()) === 'result') {
-        d.back();
-        d.sleep(1000);
-      }
-      const end = Date.now() + 60000;
+      // Success is the session growing by one page. The app opens the export
+      // screen by itself when an import finishes, and that screen has no 已拍
+      // label at all, so the poll has to step back out of it as it appears —
+      // otherwise a trip that worked reads as a page count of nothing.
+      const end = Date.now() + Math.max(perPageMs, 60000);
       while (Date.now() < end) {
+        if (UI.onScreen(d.dump()) === 'result') {
+          d.back();
+          d.sleep(900);
+        }
         const now = sessionCount();
         if (now != null && now > before) return { ok: true, pages: now, attempt, taken: r };
-        d.sleep(1000);
+        d.sleep(900);
       }
     }
     picker.cancel();
@@ -249,28 +254,50 @@ function tapSessionThumb(index) {
 }
 
 /**
- * Delete every listed document whose title starts with `prefix`, page by page,
- * through the Docs tab's own multi-select. Suites that create documents have to
- * remove them again — the library is the user's, not the test's.
+ * Delete every listed document titled `prefix`, page by page, through the Docs
+ * tab's own multi-select. Suites that create documents have to remove them
+ * again — the library is the user's, not the test's.
+ *
+ * `exact` matters for auto-generated names: "10月25日 扫描 3" is a prefix of
+ * "10月25日 扫描 30", so a prefix match here would delete the user's own
+ * document. Callers that know the whole title pass `{exact: true}`.
  */
-function deleteSeeded(prefix, { rounds = 8 } = {}) {
+function deleteSeeded(prefix, { rounds = 8, exact = false } = {}) {
+  const listed = (nodes) =>
+    nodes.filter((n) =>
+      exact ? (n.desc || '').trim() === prefix : (n.desc || '').startsWith(prefix)
+    );
   let deleted = 0;
   for (let round = 0; round < rounds; round++) {
     openDocs();
     d.sleep(900);
-    const seeds = d.dump().filter((n) => (n.desc || '').startsWith(prefix));
+    const seeds = listed(d.dump());
     if (seeds.length === 0) break;
+    const before = docCount();
     d.tap(UI.DOCS.multiSelect);
     d.sleep(700);
-    for (const card of seeds) d.tapPoint(d.screenSize().w / 2, card.center.y);
-    d.sleep(500);
-    const before = docCount();
+    for (const card of seeds) d.tapPoint(card.center.x, card.center.y);
+    d.sleep(600);
+    // Gate 1: the app's own selection counter. A row that moved between the
+    // dump and the tap selects the neighbour instead, and that neighbour can be
+    // a document of the user's.
+    const chosen = readInt(/已选\s*(\d+)/);
+    if (chosen !== seeds.length) {
+      d.tap(UI.DOCS.done);
+      throw new Error(`asked to select ${seeds.length} of "${prefix}", app shows 已选 ${chosen}`);
+    }
     d.tap(UI.DOCS.delete);
     d.sleep(900);
     // The dialog repeats the word 删除 on its confirm button, so aim at the one
     // below the question rather than the toolbar button above it.
     const ask = d.dump().find((n) => /个文档？/.test(`${n.desc || ''} ${n.text || ''}`));
     if (!ask) throw new Error(`no delete confirmation after selecting ${seeds.length} rows`);
+    // Gate 2: the question has to name the same count the toolbar did.
+    const askedN = Number(/(\d+)\s*个文档？/.exec(`${ask.desc || ''} ${ask.text || ''}`)?.[1]);
+    if (askedN !== seeds.length) {
+      d.back();
+      throw new Error(`confirm dialog offers "${ask.desc || ask.text}" for ${seeds.length} selections`);
+    }
     const confirm = d
       .dump()
       .filter((n) => (n.desc || '') === UI.DOCS.delete && n.bounds.y1 > ask.bounds.y2)
@@ -278,9 +305,10 @@ function deleteSeeded(prefix, { rounds = 8 } = {}) {
     if (!confirm) throw new Error('confirm button missing from the delete dialog');
     d.tapPoint(confirm.center.x, confirm.center.y);
     d.sleep(1500);
+    // Gate 3: the library shrinks by exactly that many, never more.
     const after = docCount();
-    if (after != null && before != null && after >= before) {
-      throw new Error(`library did not shrink (${before} -> ${after})`);
+    if (after == null || before == null || after !== before - seeds.length) {
+      throw new Error(`library went ${before} -> ${after} after deleting ${seeds.length} of "${prefix}"`);
     }
     deleted += seeds.length;
   }

@@ -131,42 +131,91 @@ function steadyRow(re, { tries = 6 } = {}) {
 }
 
 /**
- * Commit exactly one image to the app.
- * `settle` waits for the app to come back and for the pipeline to reach a
- * screen we can name, because a picker tap returns long before processing ends.
+ * The row whose name matches `re` in a dump taken right now — a y saved
+ * earlier is stale the moment the list glides.
  */
-function takeOne(re, { album = '相册', settleMs = 90000 } = {}) {
+const rowNow = (re) => rows(d.dump()).find((r) => re.test(r.name)) ?? null;
+
+/**
+ * The clickable row container that `y` falls inside. Tapping the title text's
+ * own centre sometimes lands on the divider between two rows, and a tap there
+ * is silently swallowed: the picker keeps focus and nothing is committed.
+ */
+function clickableRow(nodes, y) {
+  return (
+    nodes
+      .filter((n) => {
+        const h = n.bounds.y2 - n.bounds.y1;
+        return n.clickable && h >= 48 && h <= 260 && n.bounds.y1 <= y && n.bounds.y2 >= y;
+      })
+      .sort((a, b) => a.bounds.y2 - a.bounds.y1 - (b.bounds.y2 - b.bounds.y1))[0] ?? null
+  );
+}
+
+/**
+ * Commit one tap: locate the fixture row, wait for the list to stop moving,
+ * then tap the centre of the clickable row read from that same dump.
+ */
+function tapRow(re) {
+  if (!findRow(re)) return null;
+  const found = steadyRow(re) ?? rowNow(re);
+  if (!found) return null;
+  const screen = d.screenSize();
+  const hit = clickableRow(d.dump(), found.y);
+  d.tapPoint(hit ? hit.center.x : Math.round(screen.w / 2), hit ? hit.center.y : found.y);
+  return { name: found.name, y: found.y };
+}
+
+/** Open the picker and get it into list view — the state every tap needs. */
+function openPicker(album) {
   const opened = open(album);
   if (!opened.opened) return { ok: false, stage: 'open', detail: opened };
   grant();
-
   const mode = ensureList();
-  if (!mode.list) return { ok: false, stage: 'list-view', detail: mode.reason };
+  return mode.list ? { ok: true } : { ok: false, stage: 'list-view', detail: mode.reason };
+}
 
-  let row = findRow(re);
-  if (!row) {
-    d.back();
-    return { ok: false, stage: 'find', detail: `no visible row matching ${re}` };
-  }
-  row = steadyRow(re) || row;
-
-  const screen = d.screenSize();
-  d.tapPoint(Math.round(screen.w / 2), row.y);
-
-  if (!waitForApp(30000)) return { ok: false, stage: 'handback', detail: 'picker kept focus' };
-
+/** The app is back and the pipeline has reached a screen we can name. */
+function finish(picked, attempts, settleMs) {
   const t0 = Date.now();
-  let landed = null;
   while (Date.now() - t0 < settleMs) {
     const labels = d.visibleLabels();
     if (labels.some((l) => /保存到文档|导出 PDF|未检测到边缘|已拍/.test(l))) {
-      landed = labels;
-      break;
+      return { ok: true, picked: picked?.name ?? null, attempts, ms: Date.now() - t0, labels };
     }
     d.sleep(1000);
   }
-  if (!landed) return { ok: false, stage: 'settle', detail: `no app screen within ${settleMs}ms` };
-  return { ok: true, picked: row.name, ms: Date.now() - t0, labels: landed };
+  return { ok: false, stage: 'settle', detail: `no app screen within ${settleMs}ms` };
+}
+
+/**
+ * Commit exactly one image to the app.
+ * A swallowed tap does not end the trip: `taps` attempts each re-read the row
+ * before tapping, which is the only way to tell "this ROM ignores that tap"
+ * from "the row had moved by then".
+ */
+function takeOne(re, { album = '相册', settleMs = 90000, taps = 3 } = {}) {
+  const ready = openPicker(album);
+  if (!ready.ok) return ready;
+
+  let tapped = null;
+  for (let attempt = 1; attempt <= taps; attempt++) {
+    if (isPicker()) {
+      tapped = tapRow(re);
+      if (!tapped) {
+        d.back();
+        return { ok: false, stage: 'find', detail: `no visible row matching ${re}` };
+      }
+    }
+    // either we just tapped, or the picker closed between attempts
+    if (waitForApp(30000) || d.isForeground()) return finish(tapped, attempt, settleMs);
+  }
+  return {
+    ok: false,
+    stage: 'handback',
+    detail: `${taps} taps on ${tapped?.name ?? re} left the picker in focus`,
+    labels: d.visibleLabels(),
+  };
 }
 
 const cancel = () => {
@@ -183,4 +232,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { open, grant, ensureList, findRow, rows, takeOne, cancel, isPicker };
+module.exports = { open, grant, ensureList, findRow, rows, rowNow, clickableRow, tapRow, takeOne, cancel, isPicker };
