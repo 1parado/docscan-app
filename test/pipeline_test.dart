@@ -76,12 +76,44 @@ void main() {
     expect(dark, greaterThan(0));
   });
 
-  test('toA4 produces the 200dpi canvas', () {
+  test('toA4 writes the tier the page can actually fill', () {
+    img.Image sized(int w, int h) => img.Image(width: w, height: h, numChannels: 3);
+    expect(a4DpiFor(sized(1200, 1600)), 200);
+    expect(a4DpiFor(sized(2200, 3000)), 250);
+    expect(a4DpiFor(sized(2600, 3600)), 300);
+    expect(toA4(sized(1200, 1600), dpi: 300).width, a4Tiers[300]!.$1);
+    expect(toA4(sized(2600, 3600)).height, a4Tiers[300]!.$2);
+  });
+
+  test('a small page still lands on an A4 sheet', () {
     final photo = makePhoto();
     final (page, _) = processPage(photo, mode: ScanMode.color);
     final a4 = toA4(page);
-    expect(a4.width, 1654);
-    expect(a4.height, 2339);
+    final (w, h) = a4Tiers[a4DpiFor(page)]!;
+    expect((a4.width, a4.height), (w, h));
+    expect(a4.width / a4.height, closeTo(210 / 297, 0.01));
+  });
+
+  test('fourPointTransform bounds the sheet and pre-filters the source', () {
+    final photo = img.Image(width: 2000, height: 1500, numChannels: 3);
+    img.fill(photo, color: img.ColorUint8.rgb(200, 198, 194));
+    final warped = fourPointTransform(
+      photo,
+      [
+        [100, 100], [1900, 100], [1900, 1400], [100, 1400],
+      ],
+      maxSide: 800,
+    );
+    expect(math.max(warped.width, warped.height), lessThanOrEqualTo(800));
+    // The pre-filter has to survive the shrink: a flat grey page stays grey.
+    var sum = 0, n = 0;
+    for (var y = 4; y < warped.height; y += 8) {
+      for (var x = 4; x < warped.width; x += 8) {
+        sum += warped.getPixel(x, y).luminance.toInt();
+        n++;
+      }
+    }
+    expect(sum / n, closeTo(199, 8));
   });
 
   test('jpeg round-trip keeps an image', () {

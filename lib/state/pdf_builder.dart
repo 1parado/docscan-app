@@ -5,9 +5,10 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
 /// Build a multi-page A4 PDF from processed page JPEGs.
-/// Pages are already A4-aligned (200dpi) by the pipeline, so each JPEG fills
-/// one page exactly — the same one-JPEG-per-page strategy as the web project,
-/// where JPEG q88 keeps files small without visible loss.
+/// Pages are already on an A4 canvas (200/250/300dpi, chosen per page by the
+/// pipeline), so each JPEG fills one page exactly — the same one-JPEG-per-page
+/// strategy as the web project, where JPEG q88 keeps files small without
+/// visible loss.
 Future<Uint8List> buildPdf(List<String> pagePaths) async {
   final doc = pw.Document();
   for (final path in pagePaths) {

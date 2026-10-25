@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -47,18 +49,38 @@ class _CameraPageState extends ConsumerState<CameraPage> {
         (c) => c.lensDirection == CameraLensDirection.back,
         orElse: () => cameras.first,
       );
-      final controller = CameraController(
-        back,
+      // A page shot at 1080p carries fewer pixels than the A4 sheet it is
+      // written onto, so every scan ends up soft however good the enhancement
+      // is. Ask the sensor for its largest still image and step down only when
+      // the device refuses.
+      const presets = [
+        ResolutionPreset.max,
+        ResolutionPreset.veryHigh,
         ResolutionPreset.high,
-        imageFormatGroup: ImageFormatGroup.jpeg,
-        enableAudio: false,
-      );
-      await controller.initialize();
-      if (!mounted) return;
-      setState(() => _controller = controller);
-      if (_detectEnabled) {
-        await controller.startImageStream(_onFrame);
+      ];
+      Object? lastError;
+      for (final preset in presets) {
+        final controller = CameraController(
+          back,
+          preset,
+          imageFormatGroup: ImageFormatGroup.jpeg,
+          enableAudio: false,
+        );
+        try {
+          await controller.initialize();
+          if (!mounted) {
+            await controller.dispose();
+            return;
+          }
+          setState(() => _controller = controller);
+          if (_detectEnabled) await controller.startImageStream(_onFrame);
+          return;
+        } catch (e) {
+          lastError = e;
+          await controller.dispose();
+        }
       }
+      if (mounted) setState(() => _error = '相机不可用：$lastError');
     } catch (e) {
       if (mounted) setState(() => _error = '相机不可用：$e');
     }
@@ -99,21 +121,35 @@ class _CameraPageState extends ConsumerState<CameraPage> {
     ]; // flat TLx,TLy,TRx,... normalized
   }
 
+  /// The Y plane, box-downsampled straight to [targetW]. The old path pushed
+  /// every source pixel through the pixel API — 2M calls per frame at 1080p,
+  /// twelve times that at full resolution — which is how a viewfinder becomes a
+  /// slideshow.
   img.Image _yuvToGray(CameraImage frame, int targetW) {
-    final w = frame.width, h = frame.height;
     final plane = frame.planes.first;
-    final out = img.Image(width: w, height: h, numChannels: 1);
-    final o = out.data!;
     final bytes = plane.bytes;
-    for (var y = 0; y < h; y++) {
-      for (var x = 0; x < w; x++) {
-        o.setPixelR(x, y, bytes[y * plane.bytesPerRow + x]);
+    final stride = math.max(1, plane.bytesPerRow);
+    final w = frame.width;
+    final h = math.min(frame.height, bytes.length ~/ stride);
+    final tw = math.min(targetW, w);
+    final th = math.max(1, (h * tw / w).round());
+    final out = Uint8List(tw * th);
+    for (var oy = 0; oy < th; oy++) {
+      final y0 = (oy * h / th).floor(), y1 = math.min(h, ((oy + 1) * h / th).ceil());
+      for (var ox = 0; ox < tw; ox++) {
+        final x0 = (ox * w / tw).floor(), x1 = math.min(w, ((ox + 1) * w / tw).ceil());
+        var sum = 0, n = 0;
+        for (var y = y0; y < y1; y++) {
+          final row = y * stride;
+          for (var x = x0; x < x1; x++) {
+            sum += bytes[row + x];
+            n++;
+          }
+        }
+        out[oy * tw + ox] = n == 0 ? 0 : sum ~/ n;
       }
     }
-    if (w > targetW) {
-      return img.copyResize(out, width: targetW, interpolation: img.Interpolation.average);
-    }
-    return out;
+    return img.Image.fromBytes(width: tw, height: th, bytes: out.buffer, numChannels: 1);
   }
 
   Future<void> _capture() async {

@@ -7,6 +7,10 @@ import '../state/scan_state.dart';
 import '../widgets/page_actions.dart';
 import 'adjust_page.dart';
 
+/// The sheet the document gets written at: the finest tier any page reached.
+int _finestDpi(List<ScanPage> pages) =>
+    pages.fold(200, (best, p) => p.dpi > best ? p.dpi : best);
+
 /// Result / export page: page strip, title field (pre-filled with the auto
 /// name), export button. Motion: pages rise in staggered.
 class ResultPage extends ConsumerStatefulWidget {
@@ -89,7 +93,7 @@ class _ResultPageState extends ConsumerState<ResultPage> {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-          child: Text('${pages.length} 页 · A4 · 200dpi',
+          child: Text('${pages.length} 页 · A4 · ${_finestDpi(pages)}dpi',
               style: const TextStyle(color: Ds.textDim, fontSize: 13)),
         ),
         Padding(

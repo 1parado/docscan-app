@@ -10,6 +10,22 @@ import 'package:image/image.dart' as img;
 /// All functions are pure and synchronous; callers run them inside an
 /// [Isolate] to keep the UI at 60fps.
 
+/// The A4 sheets the pipeline writes, keyed by dpi as (width, height) in px.
+const Map<int, (int, int)> a4Tiers = {
+  300: (2480, 3508),
+  250: (2067, 2922),
+  200: (1654, 2339),
+};
+
+/// The finest A4 tier a page can fill with real pixels. Below a tier's own
+/// long edge the sheet would be an upscale, so the page drops to the next one.
+int a4DpiFor(img.Image page) {
+  final long = math.max(page.width, page.height);
+  if (long >= 3400) return 300;
+  if (long >= 2800) return 250;
+  return 200;
+}
+
 /// Order four points as TL, TR, BR, BL.
 List<List<double>> orderPoints(List<List<double>> pts) {
   final sums = pts.map((p) => p[0] + p[1]).toList();
@@ -36,6 +52,9 @@ int _indexOfMax(List<num> xs) {
   }
   return best;
 }
+
+double _dist(List<double> a, List<double> b) =>
+    math.sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]));
 
 /// Find the document quad in a grayscale-or-RGB image.
 /// Returns [TL, TR, BR, BL] each [x, y] in source pixels, or null.
@@ -233,19 +252,44 @@ bool _isConvexQuad(List<List<double>> q) {
 
 /// Perspective-warp the quad to an upright rectangle.
 /// Port of warp.four_point_transform.
-img.Image fourPointTransform(img.Image src, List<List<double>> quad) {
+///
+/// [maxSide] bounds the output: a longer edge than the finest A4 sheet is
+/// pixels the phone pays for at every later stage and the PDF throws away.
+img.Image fourPointTransform(img.Image src, List<List<double>> quad, {int maxSide = 3600}) {
   final ordered = orderPoints(quad);
-  final (tl, tr, br, bl) = (ordered[0], ordered[1], ordered[2], ordered[3]);
 
-  final widthTop = math.sqrt(math.pow(tr[0] - tl[0], 2) + math.pow(tr[1] - tl[1], 2));
-  final widthBot = math.sqrt(math.pow(br[0] - bl[0], 2) + math.pow(br[1] - bl[1], 2));
-  final heightL = math.sqrt(math.pow(bl[0] - tl[0], 2) + math.pow(bl[1] - tl[1], 2));
-  final heightR = math.sqrt(math.pow(br[0] - tr[0], 2) + math.pow(br[1] - tr[1], 2));
-  final maxW = math.max(widthTop, widthBot).round().clamp(1, 1 << 14);
-  final maxH = math.max(heightL, heightR).round().clamp(1, 1 << 14);
+  final widthTop = _dist(ordered[0], ordered[1]);
+  final widthBot = _dist(ordered[3], ordered[2]);
+  final heightL = _dist(ordered[0], ordered[3]);
+  final heightR = _dist(ordered[1], ordered[2]);
+  var maxW = math.max(widthTop, widthBot).round().clamp(1, 1 << 14);
+  var maxH = math.max(heightL, heightR).round().clamp(1, 1 << 14);
+  if (math.max(maxW, maxH) > maxSide) {
+    final s = maxSide / math.max(maxW, maxH);
+    maxW = (maxW * s).round().clamp(1, maxSide);
+    maxH = (maxH * s).round().clamp(1, maxSide);
+  }
+
+  // Sampling a much larger photo straight through bilinear taps decimates
+  // source pixels — that is how text turns into sparkle. Shrink the source
+  // first with an area filter, then warp close to 1:1.
+  var work = src;
+  var corners = ordered;
+  final srcLong = math.max(math.max(widthTop, widthBot), math.max(heightL, heightR));
+  if (srcLong / math.max(maxW, maxH) > 1.6) {
+    final f = math.max(maxW, maxH) / srcLong;
+    work = img.copyResize(
+      src,
+      width: math.max(1, (src.width * f).round()),
+      height: math.max(1, (src.height * f).round()),
+      interpolation: img.Interpolation.average,
+    );
+    corners = [for (final p in ordered) [p[0] * f, p[1] * f]];
+  }
+  final (tl, tr, br, bl) = (corners[0], corners[1], corners[2], corners[3]);
 
   final dst = img.Image(width: maxW, height: maxH, numChannels: 3);
-  final s = src.data!;
+  final s = work.data!;
   final d = dst.data!;
 
   // Inverse bilinear mapping: for each dst pixel, solve the homography that
@@ -261,7 +305,7 @@ img.Image fourPointTransform(img.Image src, List<List<double>> quad) {
       final sx = (coeffs[0] * x + coeffs[1] * y + coeffs[2]) / denom;
       final sy = (coeffs[3] * x + coeffs[4] * y + coeffs[5]) / denom;
       final x0 = sx.floor(), y0 = sy.floor();
-      if (x0 < 0 || y0 < 0 || x0 >= src.width - 1 || y0 >= src.height - 1) {
+      if (x0 < 0 || y0 < 0 || x0 >= work.width - 1 || y0 >= work.height - 1) {
         d.setPixelRgb(x, y, 255, 255, 255);
         continue;
       }
@@ -488,10 +532,13 @@ void _adaptiveThreshold(img.Image g, int win, int c) {
   }
 }
 
-/// Scale a page onto a centered white A4 canvas at 200dpi.
-/// Port of pipeline.to_a4.
-img.Image toA4(img.Image page) {
-  const a4W = 1654, a4H = 2339;
+/// Scale a page onto a centered white A4 canvas.
+///
+/// [a4Tiers] is why the sheet is not one fixed size: writing 300dpi over a
+/// page that only carries 200dpi of real detail costs the phone four times
+/// the pixels and comes out softer, not sharper.
+img.Image toA4(img.Image page, {int? dpi}) {
+  final (a4W, a4H) = a4Tiers[dpi ?? a4DpiFor(page)]!;
   final scale = math.min(a4W / page.width, a4H / page.height);
   final nw = math.max(1, (page.width * scale).round());
   final nh = math.max(1, (page.height * scale).round());

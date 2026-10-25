@@ -16,11 +16,16 @@ class ScanPage {
     this.cropStatus = 'kept',
     this.manualCorners,
     this.pending = false,
+    this.dpi = 200,
   });
 
   final File file; // processed A4 JPEG, or the untouched capture while pending
   final String cropStatus; // cropped / kept / not_found / manual / pending
   List<List<double>>? manualCorners; // set by the adjust sheet
+
+  /// The A4 tier the pipeline chose for this page — the sheet is only as fine
+  /// as the pixels the photo really carries.
+  final int dpi;
 
   /// True while `file` is still the raw photo: the edge warp and the
   /// enhancement mode run at 下一步, not at import, so a page can be dropped or
@@ -208,6 +213,7 @@ class ScanSession extends Notifier<List<ScanPage>> {
       file: File(result.$1),
       cropStatus: result.$2,
       manualCorners: manualCorners,
+      dpi: result.$3,
     );
   }
 
@@ -242,7 +248,7 @@ class ScanSession extends Notifier<List<ScanPage>> {
 }
 
 // Runs inside an isolate: only plain data crosses the boundary.
-(String, String) _processImpl(
+(String, String, int) _processImpl(
   Uint8List bytes,
   String outPath,
   ScanModeSetting m,
@@ -256,9 +262,9 @@ class ScanSession extends Notifier<List<ScanPage>> {
     autoCrop: crop,
     manualCorners: manualCorners,
   );
-  final a4 = toA4(page);
-  File(outPath).writeAsBytesSync(encodeJpeg(a4, quality: 88));
-  return (outPath, st);
+  final dpi = a4DpiFor(page);
+  File(outPath).writeAsBytesSync(encodeJpeg(toA4(page, dpi: dpi), quality: 88));
+  return (outPath, st, dpi);
 }
 
 final sessionProvider = NotifierProvider<ScanSession, List<ScanPage>>(ScanSession.new);
