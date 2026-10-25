@@ -266,13 +266,21 @@ class _SessionViewState extends ConsumerState<_SessionView> {
       _done = 0;
     });
     try {
-      await session.processPending(onProgress: (done, _) {
+      final missing = await session.processPending(onProgress: (done, _) {
         if (mounted) setState(() => _done = done);
       });
       if (mounted) {
         // Not awaited: the export page is the next screen, and holding the
         // route open would leave 处理中 showing behind it.
         Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ResultPage()));
+        // A page with no detected edge is only known once the queue has run,
+        // and by then the user is already looking at its PDF.
+        if (missing > 0) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('有 $missing 页未检测到边缘 · 点页面手动裁剪'),
+            backgroundColor: Ds.danger,
+          ));
+        }
       }
     } catch (e) {
       if (mounted) {
