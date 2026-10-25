@@ -404,4 +404,77 @@ void main() {
     final back = decodeImage(bytes);
     expect(back.width, page.width);
   });
+
+  test('dewarp straightens a page whose edge bends', () {
+    // A sheet whose top edge dips 35 px in the middle (parabolic bow).
+    // pageH=800; amp gate [0.008,0.08]*800 = [6.4,64] — 35 px is inside range.
+    const bow = 35.0;
+    const left = 100.0, right = 700.0, topBase = 60.0, botY = 860.0;
+    final photo = img.Image(width: 800, height: 950, numChannels: 3);
+    img.fill(photo, color: img.ColorUint8.rgb(80, 78, 72));
+    for (var y = 0; y < photo.height; y++) {
+      for (var x = left.toInt(); x <= right.toInt(); x++) {
+        final u = (x - left) / (right - left);
+        final topY = topBase + bow * 4 * u * (1 - u);
+        if (y >= topY && y <= botY) {
+          photo.setPixel(x, y, img.ColorUint8.rgb(248, 247, 245));
+        }
+      }
+    }
+    final quad = [
+      [left, topBase], [right, topBase], [right, botY], [left, botY]
+    ];
+
+    final flat = fourPointTransform(photo, quad, maxSide: 400, dewarp: false);
+    final warped = fourPointTransform(photo, quad, maxSide: 400, dewarp: true);
+    expect(warped.width, greaterThan(0));
+
+    // Measure the spread of the desk-to-page transition row across columns.
+    double edgeSpread(img.Image im) {
+      var min = im.height.toDouble(), max = 0.0;
+      for (var x = 10; x < im.width - 10; x += 10) {
+        for (var y = 1; y < im.height; y++) {
+          if (im.getPixel(x, y).r - im.getPixel(x, y - 1).r > 100) {
+            if (y < min) min = y.toDouble();
+            if (y > max) max = y.toDouble();
+            break;
+          }
+        }
+      }
+      return max - min;
+    }
+
+    final spreadNoDewarp = edgeSpread(flat);
+    final spreadDewarp = edgeSpread(warped);
+    expect(spreadDewarp, lessThan(spreadNoDewarp),
+        reason: 'dewarp must straighten the bowed top edge '
+            '($spreadNoDewarp → $spreadDewarp px spread)');
+  });
+
+  test('dewarp leaves a flat page identical to the homography alone', () {
+    // Straight-edged page: bow amplitude is below the gate, so _edgeBow
+    // returns null and the dewarp path must not alter any pixel.
+    final photo = img.Image(width: 600, height: 800, numChannels: 3);
+    img.fill(photo, color: img.ColorUint8.rgb(80, 78, 72));
+    final page = img.Image(width: 500, height: 700, numChannels: 3);
+    img.fill(page, color: img.ColorUint8.rgb(248, 247, 245));
+    img.compositeImage(photo, page, dstX: 50, dstY: 50);
+    final quad = [
+      [50.0, 50.0],
+      [550.0, 50.0],
+      [550.0, 750.0],
+      [50.0, 750.0]
+    ];
+    final withDewarp = fourPointTransform(photo, quad, maxSide: 200, dewarp: true);
+    final without = fourPointTransform(photo, quad, maxSide: 200, dewarp: false);
+    var diffs = 0;
+    for (var y = 0; y < withDewarp.height; y += 5) {
+      for (var x = 0; x < withDewarp.width; x += 5) {
+        if ((withDewarp.getPixel(x, y).r - without.getPixel(x, y).r).abs() > 2) {
+          diffs++;
+        }
+      }
+    }
+    expect(diffs, 0, reason: 'flat page: dewarp must be a no-op');
+  });
 }

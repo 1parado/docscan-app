@@ -725,7 +725,8 @@ bool _isConvexQuad(List<List<double>> q) {
 ///
 /// [maxSide] bounds the output: a longer edge than the finest A4 sheet is
 /// pixels the phone pays for at every later stage and the PDF throws away.
-img.Image fourPointTransform(img.Image src, List<List<double>> quad, {int maxSide = 3600}) {
+img.Image fourPointTransform(img.Image src, List<List<double>> quad,
+    {int maxSide = 3600, bool dewarp = true}) {
   final ordered = orderPoints(quad);
 
   final widthTop = _dist(ordered[0], ordered[1]);
@@ -759,8 +760,9 @@ img.Image fourPointTransform(img.Image src, List<List<double>> quad, {int maxSid
   final (tl, tr, br, bl) = (corners[0], corners[1], corners[2], corners[3]);
 
   final dst = img.Image(width: maxW, height: maxH, numChannels: 3);
-  final s = work.data!;
-  final d = dst.data!;
+  final (sp, sStride) = _plane(work);
+  final (dp, dStride) = _plane(dst);
+  final nc = work.numChannels;
 
   // Inverse bilinear mapping: for each dst pixel, solve the homography that
   // sends the unit square to the quad, then sample bilinearly.
@@ -769,29 +771,140 @@ img.Image fourPointTransform(img.Image src, List<List<double>> quad, {int maxSid
     tl, tr, br, bl,
   );
 
+  // The curl of the sheet, per destination column, in destination rows. A page
+  // held in one hand bends, and a homography — which maps straight lines to
+  // straight lines — cannot follow it: the crop comes out square while the
+  // text on the page keeps drifting across the rows.
+  final pageH = math.max(1.0, (heightL + heightR) / 2);
+  final bowK = maxH / pageH;
+  final down = _down(bl, tl);
+  final topBow = dewarp ? _edgeBow(sp, sStride, nc, work.height, tl, tr, down, pageH) : null;
+  final botBow = dewarp ? _edgeBow(sp, sStride, nc, work.height, bl, br, down, pageH) : null;
+  final bowShift = List<(double?, double?)>.generate(maxW, (x) {
+    final u = maxW == 1 ? 0.0 : x / (maxW - 1);
+    final t = topBow == null
+        ? null
+        : topBow[(u * (topBow.length - 1)).round()] * bowK;
+    final b = botBow == null
+        ? null
+        : botBow[(u * (botBow.length - 1)).round()] * bowK;
+    return (t, b);
+  });
+
   for (var y = 0; y < maxH; y++) {
+    final v = y / maxH.toDouble();
     for (var x = 0; x < maxW; x++) {
-      final denom = coeffs[6] * x + coeffs[7] * y + 1;
-      final sx = (coeffs[0] * x + coeffs[1] * y + coeffs[2]) / denom;
-      final sy = (coeffs[3] * x + coeffs[4] * y + coeffs[5]) / denom;
+      final (t, b) = bowShift[x];
+      // Interpolate the row offset linearly between the two page edges.
+      final yy = (t == null && b == null)
+          ? y.toDouble()
+          : y + (1 - v) * (t ?? 0) + v * (b ?? 0);
+      final denom = coeffs[6] * x + coeffs[7] * yy + 1;
+      final sx = (coeffs[0] * x + coeffs[1] * yy + coeffs[2]) / denom;
+      final sy = (coeffs[3] * x + coeffs[4] * yy + coeffs[5]) / denom;
+      final oRow = y * dStride + x * 3;
       final x0 = sx.floor(), y0 = sy.floor();
       if (x0 < 0 || y0 < 0 || x0 >= work.width - 1 || y0 >= work.height - 1) {
-        d.setPixelRgb(x, y, 255, 255, 255);
+        dp[oRow] = 255;
+        dp[oRow + 1] = 255;
+        dp[oRow + 2] = 255;
         continue;
       }
       final fx = sx - x0, fy = sy - y0;
-      // bilinear per channel
-      final c00 = s.getPixel(x0, y0), c10 = s.getPixel(x0 + 1, y0);
-      final c01 = s.getPixel(x0, y0 + 1), c11 = s.getPixel(x0 + 1, y0 + 1);
-      num mix(num a, num b, num c, num d) =>
-          a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + d * fx * fy;
-      final rr = mix(c00.r, c10.r, c01.r, c11.r).toInt().clamp(0, 255);
-      final gg = mix(c00.g, c10.g, c01.g, c11.g).toInt().clamp(0, 255);
-      final bb = mix(c00.b, c10.b, c01.b, c11.b).toInt().clamp(0, 255);
-      d.setPixelRgb(x, y, rr, gg, bb);
+      final i00 = y0 * sStride + x0 * nc;
+      final w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy);
+      final w01 = (1 - fx) * fy, w11 = fx * fy;
+      for (var ch = 0; ch < 3; ch++) {
+        final val = sp[i00 + ch] * w00 +
+            sp[i00 + nc + ch] * w10 +
+            sp[i00 + sStride + ch] * w01 +
+            sp[i00 + sStride + nc + ch] * w11;
+        dp[oRow + ch] = (val + 0.5).toInt().clamp(0, 255);
+      }
     }
   }
   return dst;
+}
+
+/// The page's own down direction, as a unit vector.
+List<double> _down(List<double> bl, List<double> tl) {
+  final dx = bl[0] - tl[0], dy = bl[1] - tl[1];
+  final len = math.max(1e-6, math.sqrt(dx * dx + dy * dy));
+  return [dx / len, dy / len];
+}
+
+/// How far each point along an edge sits off the straight line between its
+/// endpoints, measured by following the page's own rows until the tone steps.
+///
+/// Returns one offset per sample in source pixels, signed along [down] and
+/// with the best-fit chord subtracted so a page that is merely skewed — already
+/// the homography's job — comes back flat. Null when the deviations say "this
+/// is not a bend": a stiff sheet gives a handful of noise, a folded corner or a
+/// mis-detected edge gives metres of it, and only the middle of that range is
+/// worth resampling for.
+List<double>? _edgeBow(
+  Uint8List p,
+  int stride,
+  int nc,
+  int imageH,
+  List<double> a,
+  List<double> b,
+  List<double> down,
+  double pageH,
+) {
+  const samples = 33;
+  final win = math.max(3.0, pageH * 0.05);
+  final off = List<double>.filled(samples, 0);
+  final dx = b[0] - a[0], dy = b[1] - a[1];
+  final maxX = (stride ~/ nc) - 1;
+
+  double lum(double x, double y) {
+    final ix = x.round().clamp(0, maxX);
+    final iy = y.round().clamp(0, imageH - 1);
+    final i = iy * stride + ix * nc;
+    return (p[i] * 77 + (nc > 1 ? p[i + 1] : p[i]) * 150 + (nc > 2 ? p[i + 2] : p[i]) * 29) / 256;
+  }
+
+  for (var s = 0; s < samples; s++) {
+    final u = s / (samples - 1).toDouble();
+    final px = a[0] + dx * u, py = a[1] + dy * u;
+    var best = -1.0, bestAt = 0.0;
+    for (var d = -win; d <= win; d += 1.0) {
+      // The edge's own gradient, projected onto the page's rows.
+      final gx = px + down[0] * d, gy = py + down[1] * d;
+      final step = (lum(gx + down[0], gy + down[1]) - lum(gx - down[0], gy - down[1])).abs();
+      if (step > best) {
+        best = step;
+        bestAt = d;
+      }
+    }
+    // At the corners, the desk→page boundary is blurred away by the resample,
+    // so any peak in the ±win window is noise. Treat a weak signal as "edge is
+    // exactly here" — which is what the chord already anchors it to.
+    off[s] = best < 20 ? 0.0 : bestAt;
+  }
+
+  // Least-squares chord, so skew and a shifted corner do not read as a bend.
+  var su = 0.0, so = 0.0, suu = 0.0, suo = 0.0;
+  for (var s = 0; s < samples; s++) {
+    final u = s / (samples - 1).toDouble();
+    su += u;
+    so += off[s];
+    suu += u * u;
+    suo += u * off[s];
+  }
+  final den = samples * suu - su * su;
+  if (den.abs() < 1e-9) return null;
+  final slope = (samples * suo - su * so) / den;
+  final intercept = (so - slope * su) / samples;
+  var amp = 0.0;
+  for (var s = 0; s < samples; s++) {
+    final u = s / (samples - 1).toDouble();
+    off[s] -= intercept + slope * u;
+    if (off[s].abs() > amp) amp = off[s].abs();
+  }
+  if (amp < pageH * 0.008 || amp > pageH * 0.08) return null;
+  return off;
 }
 
 /// 8-coefficient homography mapping dst unit corners -> src quad.
