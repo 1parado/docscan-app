@@ -15,11 +15,17 @@ class ScanPage {
     required this.file,
     this.cropStatus = 'kept',
     this.manualCorners,
+    this.pending = false,
   });
 
-  final File file; // processed, A4-aligned page JPEG
-  final String cropStatus; // cropped / kept / not_found / manual
+  final File file; // processed A4 JPEG, or the untouched capture while pending
+  final String cropStatus; // cropped / kept / not_found / manual / pending
   List<List<double>>? manualCorners; // set by the adjust sheet
+
+  /// True while `file` is still the raw photo: the edge warp and the
+  /// enhancement mode run at 下一步, not at import, so a page can be dropped or
+  /// moved before the app spends an isolate on it.
+  final bool pending;
 
   String get name => file.uri.pathSegments.last;
 }
@@ -86,6 +92,61 @@ class ScanSession extends Notifier<List<ScanPage>> {
   }
 
   void add(ScanPage page) => state = [...state, page];
+
+  /// Queue a capture untouched. The picker and the shutter both hand a file
+  /// here; the strip shows the raw photo until 下一步 runs the pipeline.
+  void addPending(File source) => state = [
+        ...state,
+        ScanPage(file: source, cropStatus: 'pending', pending: true),
+      ];
+
+  /// How many queued captures are waiting for the pipeline.
+  int get pendingCount => state.where((p) => p.pending).length;
+
+  /// Run every queued capture through the pipeline in list order, publishing
+  /// each page as it lands so the strip visibly works its way along, and return
+  /// the number of pages that came back with no detected edge.
+  ///
+  /// Sequentially on purpose: each page is its own isolate over a full-res
+  /// photo, and a handful running at once is how a scanner gets killed.
+  Future<int> processPending({void Function(int done, int total)? onProgress}) async {
+    final next = [...state];
+    final total = next.where((p) => p.pending).length;
+    var done = 0;
+    var missing = 0;
+    for (var i = 0; i < next.length; i++) {
+      final page = next[i];
+      if (!page.pending) continue;
+      // The cache dir is the OS's to reclaim; a capture that vanished mid
+      // session drops out rather than failing the whole batch.
+      if (!await page.file.exists()) {
+        next.removeAt(i);
+        i--;
+        continue;
+      }
+      final fresh = await processBytes(
+        await page.file.readAsBytes(),
+        manualCorners: page.manualCorners,
+      );
+      _discard(page);
+      next[i] = fresh;
+      if (fresh.cropStatus == 'not_found') missing++;
+      state = [...next];
+      onProgress?.call(++done, total);
+    }
+    return missing;
+  }
+
+  /// Re-crop one page in place from the adjust sheet's corners, whether or not
+  /// it has been through the pipeline yet.
+  Future<void> applyCorners(int index, List<List<double>> corners) async {
+    final page = state[index];
+    final fresh = await processBytes(
+      await page.file.readAsBytes(),
+      manualCorners: corners,
+    );
+    replaceAt(index, fresh);
+  }
 
   /// Swap a page without changing its position — re-cropping page 2 of 3 must
   /// not silently move it to the end of the exported PDF.

@@ -4,6 +4,8 @@ import 'package:share_plus/share_plus.dart';
 
 import '../design/tokens.dart';
 import '../state/scan_state.dart';
+import '../widgets/page_actions.dart';
+import 'adjust_page.dart';
 
 /// Result / export page: page strip, title field (pre-filled with the auto
 /// name), export button. Motion: pages rise in staggered.
@@ -17,6 +19,7 @@ class ResultPage extends ConsumerStatefulWidget {
 class _ResultPageState extends ConsumerState<ResultPage> {
   final _titleCtrl = TextEditingController();
   bool _exporting = false;
+  bool _editing = false;
   ScanDoc? _done;
 
   @override
@@ -34,7 +37,7 @@ class _ResultPageState extends ConsumerState<ResultPage> {
   }
 
   Future<void> _export() async {
-    if (_exporting) return;
+    if (_exporting || ref.read(sessionProvider).isEmpty) return;
     setState(() => _exporting = true);
     try {
       final title = _titleCtrl.text.trim().isEmpty
@@ -63,6 +66,24 @@ class _ResultPageState extends ConsumerState<ResultPage> {
   }
 
   Widget _exportView(BuildContext context, List<ScanPage> pages) {
+    final missing = pages.where((p) => p.cropStatus == 'not_found').length;
+    final editing = _editing && pages.isNotEmpty;
+    final String hint;
+    final Color hintColor;
+    if (pages.isEmpty) {
+      hint = '已清空 · 返回可回首页重拍';
+      hintColor = Ds.textDim;
+    } else if (missing > 0) {
+      // The one thing the export would get wrong, said where it can be fixed.
+      hint = '有 $missing 页未检测到边缘 · 点页面手动裁剪';
+      hintColor = Ds.danger;
+    } else if (editing) {
+      hint = '排序中 · ◀ ▶ 移动这一页，× 删掉它';
+      hintColor = Ds.textDim;
+    } else {
+      hint = '长按页面可排序或删除';
+      hintColor = Ds.textDim;
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -70,6 +91,10 @@ class _ResultPageState extends ConsumerState<ResultPage> {
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
           child: Text('${pages.length} 页 · A4 · 200dpi',
               style: const TextStyle(color: Ds.textDim, fontSize: 13)),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 2, 20, 0),
+          child: Text(hint, style: TextStyle(fontSize: 11.5, color: hintColor)),
         ),
         // Page strip
         SizedBox(
@@ -79,7 +104,13 @@ class _ResultPageState extends ConsumerState<ResultPage> {
             padding: const EdgeInsets.all(20),
             itemCount: pages.length,
             separatorBuilder: (_, __) => const SizedBox(width: 12),
-            itemBuilder: (context, i) => _ResultThumb(index: i, delay: i * 0.05),
+            itemBuilder: (context, i) => _ResultThumb(
+              index: i,
+              delay: i * 0.05,
+              count: pages.length,
+              editing: editing,
+              onToggleEdit: () => setState(() => _editing = !_editing),
+            ),
           ),
         ),
         Padding(
@@ -118,7 +149,9 @@ class _ResultPageState extends ConsumerState<ResultPage> {
               onTap: _export,
               child: Container(
                 decoration: BoxDecoration(
-                  color: Ds.clover,
+                  // Deleting the last page leaves nothing to build a PDF from,
+                  // so the button goes quiet rather than exporting an empty doc.
+                  color: Ds.clover.withValues(alpha: pages.isEmpty ? 0.4 : 1),
                   borderRadius: BorderRadius.circular(Ds.radius),
                   boxShadow: [BoxShadow(color: Ds.clover.withValues(alpha: 0.3), blurRadius: 22, offset: const Offset(0, 8))],
                 ),
@@ -190,15 +223,28 @@ class _ResultPageState extends ConsumerState<ResultPage> {
 }
 
 class _ResultThumb extends ConsumerWidget {
-  const _ResultThumb({required this.index, required this.delay});
+  const _ResultThumb({
+    required this.index,
+    required this.delay,
+    required this.count,
+    required this.editing,
+    this.onToggleEdit,
+  });
 
   final int index;
   final double delay;
+  final int count;
+  final bool editing;
+  final VoidCallback? onToggleEdit;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final pages = ref.watch(sessionProvider);
     final page = pages[index];
+    final session = ref.read(sessionProvider.notifier);
+    // A page that came back with no detected edge is the one the export will
+    // look wrong on, so it carries its own marker here as well as the hint line.
+    final needsCrop = page.cropStatus == 'not_found';
 
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0, end: 1),
@@ -208,24 +254,56 @@ class _ResultThumb extends ConsumerWidget {
         opacity: t,
         child: Transform.translate(offset: Offset(0, 18 * (1 - t)), child: child),
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: Stack(
-          children: [
-            Image.file(page.file, height: 190, fit: BoxFit.cover, cacheHeight: 570),
-            Positioned(
-              left: 8, bottom: 8,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.6),
-                  borderRadius: BorderRadius.circular(99),
+      child: GestureDetector(
+        onLongPress: onToggleEdit,
+        onTap: () async {
+          if (editing) {
+            onToggleEdit?.call();
+            return;
+          }
+          final updated = await Navigator.of(context).push<List<List<double>>?>(
+            MaterialPageRoute(builder: (_) => AdjustPage(pageIndex: index)),
+          );
+          if (updated != null) await session.applyCorners(index, updated);
+        },
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: Stack(
+            children: [
+              Image.file(page.file, height: 190, fit: BoxFit.cover, cacheHeight: 570),
+              Positioned(
+                left: 8, bottom: 8,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.6),
+                    borderRadius: BorderRadius.circular(99),
+                  ),
+                  child: Text('${index + 1}',
+                      style: const TextStyle(color: Colors.white, fontSize: 11)),
                 ),
-                child: Text('${index + 1}',
-                    style: const TextStyle(color: Colors.white, fontSize: 11)),
               ),
-            ),
-          ],
+              if (needsCrop && !editing)
+                Positioned(
+                  right: 6, bottom: 6,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Ds.danger,
+                      borderRadius: BorderRadius.circular(99),
+                    ),
+                    child: const Text('待裁剪',
+                        style: TextStyle(color: Colors.white, fontSize: 9.5)),
+                  ),
+                ),
+              // Top rather than bottom: the page number already owns that strip.
+              if (editing)
+                Positioned(
+                  top: 6, left: 0, right: 0,
+                  child: Center(child: PageActions(index: index, count: count)),
+                ),
+            ],
+          ),
         ),
       ),
     );

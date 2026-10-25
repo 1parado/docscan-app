@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:docscan_app/state/scan_state.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -19,6 +20,9 @@ void main() {
     final f = File('${tmp.path}/$name.jpg')..writeAsBytesSync([1, 2, 3]);
     return ScanPage(file: f, cropStatus: 'cropped');
   }
+
+  /// A capture sitting in the queue: the file is the untouched photo.
+  File rawNamed(String name) => File('${tmp.path}/$name.jpg')..writeAsBytesSync([9, 8, 7]);
 
   ScanSession sessionOf(ProviderContainer container) =>
       container.read(sessionProvider.notifier);
@@ -72,4 +76,120 @@ void main() {
     expect(b.file.existsSync(), isTrue);
     expect(container.read(sessionProvider).length, 1);
   });
+
+  test('a queued capture waits for the pipeline', () {
+    final fake = FakePipeline(tmp);
+    final container = ProviderContainer(overrides: [sessionProvider.overrideWith(() => fake)]);
+    addTearDown(container.dispose);
+
+    container.read(sessionProvider.notifier).addPending(rawNamed('a'));
+    container.read(sessionProvider.notifier).addPending(rawNamed('b'));
+
+    expect(fake.processed, isEmpty, reason: 'selecting a photo must not process it');
+    expect(container.read(sessionProvider).every((p) => p.pending), isTrue);
+    expect(fake.pendingCount, 2);
+  });
+
+  test('processPending works the queue in order and reports the pages with no edge', () async {
+    final fake = FakePipeline(tmp, notFoundOnCalls: {1});
+    final container = ProviderContainer(overrides: [sessionProvider.overrideWith(() => fake)]);
+    addTearDown(container.dispose);
+    final s = container.read(sessionProvider.notifier);
+    final a = rawNamed('a'), b = rawNamed('b'), c = rawNamed('c');
+    s.addPending(a);
+    s.addPending(b);
+    s.addPending(c);
+
+    final seen = <String>[];
+    final missing =
+        await s.processPending(onProgress: (done, total) => seen.add('$done/$total'));
+
+    expect(missing, 1);
+    expect(fake.processed, ['out_0', 'out_1', 'out_2'], reason: 'page order is PDF order');
+    expect(seen, ['1/3', '2/3', '3/3'], reason: 'the strip needs progress, not a freeze');
+    expect(container.read(sessionProvider).map((p) => p.name), ['out_0.jpg', 'out_1.jpg', 'out_2.jpg']);
+    expect(container.read(sessionProvider).every((p) => !p.pending), isTrue);
+    for (final raw in [a, b, c]) {
+      expect(raw.existsSync(), isFalse, reason: 'the raw copy leaked in the cache dir');
+    }
+  });
+
+  test('processPending leaves a page that already went through the pipeline', () async {
+    final fake = FakePipeline(tmp);
+    final container = ProviderContainer(overrides: [sessionProvider.overrideWith(() => fake)]);
+    addTearDown(container.dispose);
+    final s = container.read(sessionProvider.notifier);
+    final queued = rawNamed('a');
+    final done = pageNamed('done');
+    s.addPending(queued);
+    s.add(done);
+
+    expect(await s.processPending(), 0);
+    expect(fake.processed, ['out_0']);
+    expect(container.read(sessionProvider).last, same(done));
+  });
+
+  test('a capture whose cache file vanished drops out of the queue', () async {
+    final fake = FakePipeline(tmp);
+    final container = ProviderContainer(overrides: [sessionProvider.overrideWith(() => fake)]);
+    addTearDown(container.dispose);
+    final s = container.read(sessionProvider.notifier);
+    s.addPending(rawNamed('a'));
+    s.addPending(rawNamed('b'));
+    File('${tmp.path}/a.jpg').deleteSync();
+
+    expect(await s.processPending(), 0);
+    expect(container.read(sessionProvider).length, 1);
+    expect(fake.processed, ['out_0'], reason: 'only the surviving capture is processed');
+  });
+
+  test('applyCorners re-crops one queued page without moving it', () async {
+    final fake = FakePipeline(tmp);
+    final container = ProviderContainer(overrides: [sessionProvider.overrideWith(() => fake)]);
+    addTearDown(container.dispose);
+    final s = container.read(sessionProvider.notifier);
+    s.addPending(rawNamed('a'));
+    final b = rawNamed('b');
+    s.addPending(b);
+
+    await s.applyCorners(1, [
+      [0.1, 0.1],
+      [0.9, 0.1],
+      [0.9, 0.9],
+      [0.1, 0.9]
+    ]);
+
+    final pages = container.read(sessionProvider);
+    expect(pages[1].pending, isFalse, reason: 'a hand-cropped page is done');
+    expect(pages[1].manualCorners, isNotNull);
+    expect(pages[0].pending, isTrue, reason: 'the other page still waits its turn');
+    expect(b.existsSync(), isFalse);
+  });
+}
+
+/// The real pipeline wants an isolate, a JPEG decoder and path_provider's cache
+/// directory — none of which a session queue test is about. Everything else,
+/// including the ordering and the file deleting, is production code.
+class FakePipeline extends ScanSession {
+  FakePipeline(this.tmp, {this.notFoundOnCalls = const {}});
+
+  final Directory tmp;
+
+  /// Which output, counted from zero, comes back with no detected edge.
+  final Set<int> notFoundOnCalls;
+  final List<String> processed = [];
+
+  @override
+  Future<ScanPage> processBytes(
+    Uint8List bytes, {
+    List<List<double>>? manualCorners,
+  }) async {
+    final name = 'out_${processed.length}${manualCorners == null ? '' : '_manual'}';
+    processed.add(name);
+    return ScanPage(
+      file: File('${tmp.path}/$name.jpg')..writeAsBytesSync([4, 5, 6]),
+      cropStatus: notFoundOnCalls.contains(processed.length - 1) ? 'not_found' : 'cropped',
+      manualCorners: manualCorners,
+    );
+  }
 }

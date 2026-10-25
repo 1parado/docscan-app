@@ -1,4 +1,4 @@
-import 'dart:typed_data';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../design/tokens.dart';
 import '../state/scan_state.dart';
+import '../widgets/page_actions.dart';
 import 'adjust_page.dart';
 import 'camera_page.dart';
 import 'result_page.dart';
@@ -21,7 +22,6 @@ class HomePage extends ConsumerStatefulWidget {
 
 class _HomePageState extends ConsumerState<HomePage> {
   bool _busy = false;
-  String? _flash;
   @override
   void initState() {
     super.initState();
@@ -51,21 +51,10 @@ class _HomePageState extends ConsumerState<HomePage> {
       final picked = await picker.pickMultiImage(imageQuality: 92);
       if (picked.isEmpty) return;
       final session = ref.read(sessionProvider.notifier);
-      var needsManualCrop = false;
+      // Queue, do not process: the pages the user does not want have to be
+      // removable before the app warps and enhances them.
       for (final x in picked) {
-        final bytes = await x.readAsBytes();
-        final page = await session.processBytes(Uint8List.fromList(bytes));
-        session.add(page);
-        if (page.cropStatus == 'not_found') needsManualCrop = true;
-      }
-      if (!mounted) return;
-      // The warning is drawn only by the session view, so jumping to the export
-      // screen would hide the one case where the user must act: a page with no
-      // detected edge has to be cropped on its thumbnail.
-      if (needsManualCrop) {
-        setState(() => _flash = '有照片未检测到边缘，可在缩略图上手动裁剪');
-      } else {
-        _openResult(context);
+        session.addPending(File(x.path));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -113,7 +102,7 @@ class _HomePageState extends ConsumerState<HomePage> {
             // ---------- Recent strip (has content? show it : show intro) ----------
             Expanded(
               child: pages.isNotEmpty
-                  ? _SessionView(pages: pages, flash: _flash)
+                  ? _SessionView(pages: pages)
                   : _IdleView(recent: recent),
             ),
 
@@ -182,11 +171,6 @@ class _HomePageState extends ConsumerState<HomePage> {
         ),
       ),
     );
-  }
-
-  Future<void> _openResult(BuildContext context) async {
-    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ResultPage()));
-    if (mounted) setState(() => _flash = null);
   }
 }
 
@@ -257,38 +241,68 @@ class _IdleView extends StatelessWidget {
   }
 }
 
-/// Active session view: page thumbnails + clear/next actions.
-class _SessionView extends ConsumerWidget {
-  const _SessionView({required this.pages, required this.flash});
+/// Active session view: page thumbnails, organising, and the run through the
+/// pipeline that 下一步 starts.
+class _SessionView extends ConsumerStatefulWidget {
+  const _SessionView({required this.pages});
 
   final List<ScanPage> pages;
-  final String? flash;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_SessionView> createState() => _SessionViewState();
+}
+
+class _SessionViewState extends ConsumerState<_SessionView> {
+  bool _editing = false;
+  bool _working = false;
+  int _done = 0;
+
+  Future<void> _next() async {
+    if (_working) return;
     final session = ref.read(sessionProvider.notifier);
+    setState(() {
+      _working = true;
+      _editing = false;
+      _done = 0;
+    });
+    try {
+      await session.processPending(onProgress: (done, _) {
+        if (mounted) setState(() => _done = done);
+      });
+      if (mounted) {
+        // Not awaited: the export page is the next screen, and holding the
+        // route open would leave 处理中 showing behind it.
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ResultPage()));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('处理失败：$e'), backgroundColor: Ds.danger));
+      }
+    } finally {
+      if (mounted) setState(() => _working = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pages = widget.pages;
+    final session = ref.read(sessionProvider.notifier);
+    final working = _working;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Spacer(),
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
           child: Row(
             children: [
               Text('已拍 ${pages.length} 页',
                   style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-              if (flash != null)
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.only(left: 10),
-                    child: Text(flash!,
-                        maxLines: 1, overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: Ds.danger, fontSize: 12)),
-                  ),
-                ),
               const Spacer(),
               TextButton(
-                onPressed: () => session.clear(),
+                onPressed: working ? null : () => session.clear(),
                 child: Text('清空', style: TextStyle(color: Ds.textDim, fontSize: 13.5)),
               ),
               FilledButton(
@@ -296,11 +310,17 @@ class _SessionView extends ConsumerWidget {
                   backgroundColor: Ds.clover,
                   padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
                 ),
-                onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const ResultPage())),
-                child: const Text('下一步'),
+                onPressed: working ? null : _next,
+                child: Text(working ? '处理中 $_done/${_done + session.pendingCount}' : '下一步'),
               ),
             ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
+          child: Text(
+            _editing ? '排序中 · ◀ ▶ 移动这一页，× 删掉它' : '长按页面可排序或删除',
+            style: TextStyle(fontSize: 11, color: Ds.textDim.withValues(alpha: _editing ? 1 : 0.75)),
           ),
         ),
         SizedBox(
@@ -310,7 +330,12 @@ class _SessionView extends ConsumerWidget {
             padding: const EdgeInsets.symmetric(horizontal: 20),
             itemCount: pages.length,
             separatorBuilder: (_, __) => const SizedBox(width: 8),
-            itemBuilder: (context, i) => _PageThumb(index: i),
+            itemBuilder: (context, i) => _PageThumb(
+              index: i,
+              count: pages.length,
+              editing: _editing && !working,
+              onToggleEdit: working ? null : () => setState(() => _editing = !_editing),
+            ),
           ),
         ),
       ],
@@ -390,9 +415,17 @@ class _ModeSwitch extends ConsumerWidget {
 }
 
 class _PageThumb extends ConsumerWidget {
-  const _PageThumb({required this.index});
+  const _PageThumb({
+    required this.index,
+    required this.count,
+    required this.editing,
+    this.onToggleEdit,
+  });
 
   final int index;
+  final int count;
+  final bool editing;
+  final VoidCallback? onToggleEdit;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -401,16 +434,16 @@ class _PageThumb extends ConsumerWidget {
     final session = ref.read(sessionProvider.notifier);
 
     return GestureDetector(
+      onLongPress: onToggleEdit,
       onTap: () async {
+        if (editing) {
+          onToggleEdit?.call();
+          return;
+        }
         final updated = await Navigator.of(context).push<List<List<double>>?>(
           MaterialPageRoute(builder: (_) => AdjustPage(pageIndex: index)),
         );
-        if (updated != null) {
-          final p = pages[index];
-          final bytes = await p.file.readAsBytes();
-          final newPage = await session.processBytes(bytes, manualCorners: updated);
-          session.replaceAt(index, newPage);
-        }
+        if (updated != null) await session.applyCorners(index, updated);
       },
       child: Stack(
         children: [
@@ -418,6 +451,11 @@ class _PageThumb extends ConsumerWidget {
             borderRadius: BorderRadius.circular(14),
             child: Image.file(page.file, width: 92, height: 124, fit: BoxFit.cover, cacheWidth: 280),
           ),
+          if (editing)
+            Positioned(
+              left: 0, right: 0, bottom: 6,
+              child: Center(child: PageActions(index: index, count: count)),
+            ),
           Positioned(
             left: 5, top: 5,
             child: Container(

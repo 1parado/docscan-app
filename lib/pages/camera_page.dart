@@ -1,6 +1,6 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:isolate';
-import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -124,13 +124,13 @@ class _CameraPageState extends ConsumerState<CameraPage> {
       // Stop the detection stream so the capture doesn't fight it.
       await controller.stopImageStream();
       final file = await controller.takePicture();
-      final bytes = await file.readAsBytes();
       final session = ref.read(sessionProvider.notifier);
-      final page = await session.processBytes(Uint8List.fromList(bytes));
+      // Queue the shot as taken; the warp and the enhancement run when the
+      // session is advanced, so a bad shot can still be thrown away.
+      session.addPending(File(file.path));
 
       if (!mounted) return;
       if (_multiPage) {
-        session.add(page);
         setState(() {
           _shotCount++;
           _capturing = false;
@@ -146,7 +146,6 @@ class _CameraPageState extends ConsumerState<CameraPage> {
           ));
         }
       } else {
-        session.add(page);
         if (mounted) Navigator.of(context).pop();
       }
     } catch (e) {
