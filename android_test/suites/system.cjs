@@ -200,8 +200,8 @@ module.exports = function system() {
   });
 
   // Thumbnails are pixels, so the dump cannot tell one page from another — but
-  // the edgeless fixture carries a 待裁剪 marker, and a marker changing column is
-  // arithmetic. The move is proven by the marker, not by a screenshot.
+  // the edgeless fixture carries a 待裁剪 marker, and a marker that shifted by one
+  // slot pitch is arithmetic. The move is measured, not eyeballed.
   gated('the front arrow moves a page one slot', () => {
     f.home();
     if (f.sessionCount() != null) f.clearSession();
@@ -209,18 +209,22 @@ module.exports = function system() {
     if (!r.ok) throw new Error(`picker failed at stage "${r.stage}": ${JSON.stringify(r.detail)}`);
     f.openResult();
     const before = f.stripState();
-    must(before.marked.length === 1, `expected one marked page, saw ${JSON.stringify(before.marked)}`);
-    must(before.marked[0] === 0, `the edgeless import did not land in the first slot (${before.marked[0]})`);
+    must(before.markers.length === 1, `expected one marked page, saw ${JSON.stringify(before.markers)}`);
+    must(before.badges.length === 2, `the export strip should show two badges, saw ${before.badges.length}`);
+    must(before.pitch > 0, 'both page badges report the same x — the strip did not lay out');
+    must(before.markers[0] < before.badges[1], 'the edgeless page is not in the first slot');
     must(f.longPressPage(1) != null, 'page badge "2" not found on the export strip');
     must(f.tapPageAction(UI.PAGES.prev(2)), 'the ◀ handle for page 2 was not tappable');
     const after = f.stripState();
-    must(after.marked[0] === 1, `the marker stayed in slot ${after.marked[0]} after ◀`);
+    const shift = after.markers[0] - before.markers[0];
+    must(after.markers.length === 1, `the move left ${after.markers.length} markers on screen`);
+    must(Math.abs(shift - before.pitch) < 12, `the marker moved ${shift}px, one slot is ${before.pitch}px`);
     must(after.pages === before.pages, `the move changed the page count to ${after.pages}`);
     s.shot('page_moved');
     d.back();
     f.home();
     f.clearSession();
-    return 'the marker moved from slot 1 to slot 2';
+    return `marker shifted ${shift}px across a ${before.pitch}px slot`;
   });
 
   gated('export saves the doc and empties the session', () => {

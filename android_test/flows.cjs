@@ -217,24 +217,29 @@ function tapPageAction(label) {
   return n;
 }
 
-/** x of each page badge in the strip — which slot a thumbnail is in. */
-function stripSlots(count = 3, nodes = d.dump()) {
-  return Array.from({ length: count }, (_, i) =>
-    nodes.find((n) => (n.desc || n.text) === String(i + 1))?.center.x ?? null
-  );
-}
-
 /**
- * The strip as the user sees it: page badge x per slot, plus the x of every
- * 待裁剪 marker. A page that moved shows up as the marker changing column —
- * thumbnails are pixels, but the marker's slot is a number the dump can prove.
+ * The strip as the dump can state it: the x of each page badge, the distance
+ * between two neighbouring slots, and the x of every 待裁剪 marker.
+ *
+ * A thumbnail is pixels, so the only way to see a page move is that its marker
+ * shifts by exactly one slot pitch — the badge sits at the left edge of a thumb
+ * and the marker at its right, so comparing them head to head would blame the
+ * marker on the neighbour.
  */
 function stripState(nodes = d.dump()) {
-  const slots = stripSlots(3, nodes);
-  const marked = nodes
-    .filter((n) => (n.desc || n.text) === UI.RESULT.cropBadge)
-    .map((n) => slots.findIndex((x) => x != null && Math.abs(x - n.center.x) < 60));
-  return { slots, marked, pages: resultPages(nodes) };
+  const badges = [1, 2, 3, 4, 5, 6]
+    .map((n) => nodes.find((x) => (x.desc || x.text) === String(n)))
+    .filter(Boolean)
+    .map((b) => b.center.x);
+  return {
+    badges,
+    pitch: badges.length > 1 ? badges[1] - badges[0] : 0,
+    markers: nodes
+      .filter((n) => (n.desc || n.text) === UI.RESULT.cropBadge)
+      .map((n) => n.center.x)
+      .sort((a, b) => a - b),
+    pages: resultPages(nodes),
+  };
 }
 
 /**
