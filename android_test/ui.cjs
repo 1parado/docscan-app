@@ -59,6 +59,8 @@ const DOCS = {
   delete: '删除',
   done: '完成',
   renameSheet: '重命名',
+  cancel: '取消',
+  renameSave: '保存',
   batchSheet: '批量重命名',
   filterHint: '按名称筛选',
   dateFilter: '日期',

@@ -255,10 +255,15 @@ function tap(label) {
   return n;
 }
 
+function longPressPoint(x, y, ms = 900) {
+  adb(['shell', 'input', 'swipe', String(x), String(y), String(x), String(y), String(ms)]);
+  return { x, y };
+}
+
 function longPress(label, ms = 900) {
   const n = find(label);
   if (!n) throw new Error(`longPress: no UI element matching "${label}"`);
-  adb(['shell', 'input', 'swipe', String(n.center.x), String(n.center.y), String(n.center.x), String(n.center.y), String(ms)]);
+  longPressPoint(n.center.x, n.center.y, ms);
   return n;
 }
 
@@ -453,6 +458,7 @@ module.exports = {
   tap,
   tapPoint,
   longPress,
+  longPressPoint,
   back,
   homeKey,
   swipe,

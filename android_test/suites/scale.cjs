@@ -104,28 +104,24 @@ module.exports = function scale() {
     d.tapPoint(last.center.x, last.center.y);
     d.sleep(1400);
     const nodes = d.dump();
-    const shown = nodes.filter((n) => (n.desc || '').startsWith('qa-scale-'));
-    must(shown.length > 0, `page ${last.desc} shows no documents`);
+    // Card bodies are invisible to this ROM's dump, so a page of results is
+    // counted by its per-row action buttons — one 删除 per row.
+    const rows = f.rowAnchors(nodes);
+    must(rows.length > 0, `page ${last.desc} shows no documents`);
     s.shot('last_page');
-    return `page ${last.desc} shows ${shown.length} docs`;
+    return `page ${last.desc} shows ${rows.length} docs`;
   });
 
   s.test('S5 name filter stays usable with a full library', () => {
     const field = d.dump().find((n) => /EditText/i.test(n.class));
     must(field, 'filter field not found');
     const t0 = Date.now();
-    d.tapPoint(field.center.x, field.center.y);
-    d.sleep(500);
-    d.clearField(40);
-    d.typeText('qa-scale-005');
-    d.sleep(1500);
-    const shown = d.dump().filter((n) => (n.desc || '').startsWith('qa-scale-'));
+    const shown = f.setFilter('qa-scale-005');
     const ms = Date.now() - t0;
-    must(shown.length === 1, `filter "qa-scale-005" matched ${shown.length} rows`);
+    must(shown === 1, `filter "qa-scale-005" matched ${shown} rows`);
+    must(f.rowTitle(0) === 'qa-scale-005', 'the single row is another document');
     s.note(`filter round-trip took ${ms}ms with ${f.docCount()} documents`);
-    d.back();
-    d.clearField(40);
-    d.sleep(800);
+    f.setFilter('');
     return `1 match in ${ms}ms`;
   });
 

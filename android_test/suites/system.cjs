@@ -185,56 +185,52 @@ module.exports = function system() {
   });
 
   gated('exported doc is listed in the library', () => {
-    f.openDocs();
-    const hit = d.dump().find((n) => (n.desc || '').includes('qa-export-01'));
+    const hit = f.locateDoc('qa-export-01');
     must(hit, '"qa-export-01" is not listed');
     s.shot('docs_after_export');
-    return hit.desc;
+    f.setFilter('');
+    return `row at y=${hit.row.y} of ${hit.count} match(es)`;
   });
 
   gated('long-press renames a document', () => {
-    f.openDocs();
-    const card = d.dump().find((n) => (n.desc || '').includes('qa-export-01'));
-    must(card, 'the doc under rename vanished');
-    d.longPress('qa-export-01');
-    d.sleep(1500);
+    const hit = f.locateDoc('qa-export-01');
+    must(hit, 'the doc under rename vanished');
+    const { w } = d.screenSize();
+    d.longPressPoint(Math.round(w * 0.28), hit.row.y);
+    d.sleep(1700);
     let nodes = d.dump();
-    must(nodes.some((n) => (n.desc || '').includes(UI.DOCS.renameSheet)), 'rename sheet did not open');
+    must(nodes.some((n) => (n.desc || n.text) === UI.DOCS.renameSheet), 'rename sheet did not open');
     s.shot('rename_sheet');
     const field = nodes.find((n) => /EditText/i.test(n.class));
     must(field, 'rename sheet has no text field');
+    must(field.text === 'qa-export-01', `sheet prefilled "${field.text}", not the row we opened`);
     d.tapPoint(field.center.x, field.center.y);
     d.sleep(600);
     d.clearField(60);
     d.typeText('qa-renamed-01');
     d.sleep(400);
+    f.hideKeyboard();
     nodes = d.dump();
     const save = nodes.find((n) => /保存|SAVE/.test(n.desc || n.text));
     must(save, 'rename sheet has no save button');
     d.tapPoint(save.center.x, save.center.y);
     d.sleep(2000);
-    must(d.dump().some((n) => (n.desc || '').includes('qa-renamed-01')), 'rename did not take effect');
-    d.back();
+    must(f.locateDoc('qa-renamed-01'), 'rename did not take effect');
+    f.setFilter('');
     return 'renamed and persisted';
   });
 
   gated('name filter narrows the list', () => {
     f.openDocs();
-    const field = d.dump().find((n) => /EditText/i.test(n.class));
-    must(field, 'filter field not found');
-    d.tapPoint(field.center.x, field.center.y);
-    d.sleep(600);
-    d.clearField(30);
-    d.typeText('qa-renamed');
-    d.sleep(1400);
-    const nodes = d.dump();
-    const shown = nodes.filter((n) => (n.desc || '').startsWith('qa-'));
-    must(shown.length >= 1, 'the filter hid the matching document');
-    must(!shown.some((n) => /月\d+日 扫描/.test(n.desc)), 'unrelated documents survived the filter');
+    const all = f.docCount();
+    must(all != null && all > 0, `nothing to filter — the library holds ${all}`);
+    const shown = f.setFilter('qa-renamed');
+    must(shown === 1, `a filter for a unique title leaves ${shown} document(s)`);
+    must(f.rowTitle(0) === 'qa-renamed-01', 'the row behind that filter is another document');
     s.shot('docs_filtered');
-    d.back();
-    d.sleep(600);
-    return `filter shows ${shown.length}`;
+    const cleared = f.setFilter('');
+    must(cleared === all, `clearing the filter shows ${cleared} of ${all}`);
+    return `1 of ${all} matches "qa-renamed"`;
   });
 
   s.test('date filter opens a range picker', () => {
@@ -252,15 +248,18 @@ module.exports = function system() {
   });
 
   gated('multi-select tracks the selection count', () => {
-    f.openDocs();
+    // Filtering to the one row keeps the tap target unambiguous: in selection
+    // mode the per-row buttons are replaced by a checkbox, so nothing else can
+    // say which row is which.
+    const hit = f.locateDoc('qa-renamed-01');
+    must(hit, 'no row to select');
     const multi = d.find(UI.DOCS.multiSelect);
     must(multi, 'multi-select entry point missing');
     d.tapPoint(multi.center.x, multi.center.y);
     d.sleep(900);
     must(d.dump().some((n) => (n.desc || '').includes(UI.DOCS.selectedPrefix)), 'the header did not switch to selection');
-    const card = d.dump().find((n) => (n.desc || '').includes('qa-renamed-01'));
-    must(card, 'no row to select');
-    d.tapPoint(card.center.x, card.center.y);
+    const { w } = d.screenSize();
+    d.tapPoint(Math.round(w * 0.28), hit.row.y);
     d.sleep(700);
     const sel = f.readInt(/已选\s*(\d+)/, d.dump());
     must(sel === 1, `header shows 已选 ${sel}, expected 1`);
@@ -269,30 +268,32 @@ module.exports = function system() {
     must(done, 'no way to leave selection mode');
     d.tapPoint(done.center.x, done.center.y);
     d.sleep(600);
+    f.setFilter('');
     return `selection count ${sel}`;
   });
 
   gated('PDF viewer renders the document', () => {
-    f.openDocs();
-    const card = d.dump().find((n) => (n.desc || '').includes('qa-renamed-01'));
-    must(card, 'the doc under view vanished');
-    d.tap(card.desc);
+    const hit = f.locateDoc('qa-renamed-01');
+    must(hit, 'the doc under view vanished');
+    const { w } = d.screenSize();
+    d.tapPoint(Math.round(w * 0.28), hit.row.y);
     d.sleep(6000);
     const nodes = d.dump();
     const file = s.shot('pdf_viewer');
     const st = png.stats(png.read(file));
     must(st.distinct > 60, `viewer looks blank: ${st.distinct} colours, dominant #${st.dominant.color}`);
-    must(nodes.some((n) => (n.desc || '').includes('qa-renamed-01')), 'viewer did not title itself with the doc');
+    must(nodes.some((n) => (n.desc || n.text) === 'qa-renamed-01'), 'viewer did not title itself with the doc');
     d.back();
     d.sleep(1200);
+    f.setFilter('');
     return `viewer rendered ${st.distinct} colours`;
   });
 
   gated('share hands the PDF to a system target', () => {
-    f.openDocs();
-    const share = d.dump().find((n) => (n.desc || '') === UI.DOCS.share);
-    must(share, 'per-row share action missing');
-    d.tapPoint(share.center.x, share.center.y);
+    const hit = f.locateDoc('qa-renamed-01');
+    must(hit, 'the doc to share vanished');
+    must(hit.row.share, 'per-row share action missing');
+    d.tapPoint(hit.row.share.center.x, hit.row.share.center.y);
     d.sleep(4000);
     s.shot('share_chooser');
     must(!d.isForeground(), `no chooser took the foreground (focus=${d.currentFocus()})`);
@@ -307,26 +308,19 @@ module.exports = function system() {
     d.sleep(1300);
     d.launch();
     d.waitFor(UI.HOME.brand, { timeoutMs: 15000 });
-    f.openDocs();
-    must(d.dump().some((n) => (n.desc || '').includes('qa-renamed-01')), 'exported document lost after a restart');
+    const still = f.locateDoc('qa-renamed-01');
+    must(still, 'exported document lost after a restart');
+    f.setFilter('');
     return `still ${f.docCount()} documents`;
   });
 
   gated('single delete removes exactly one document', () => {
-    f.openDocs();
+    const hit = f.locateDoc('qa-renamed-01');
+    must(hit, 'the doc to delete vanished');
+    must(hit.row.delete, 'per-row delete action missing');
     const before = f.docCount();
-    must(d.dump().some((n) => (n.desc || '').includes('qa-renamed-01')), 'the doc to delete vanished');
-    const del = d.dump().find((n) => (n.desc || '') === UI.DOCS.delete);
-    must(del, 'per-row delete action missing');
-    d.tapPoint(del.center.x, del.center.y);
-    d.sleep(1500);
-    // The confirm sheet also contains a 删除 button; the dialog one sits lowest.
-    const confirm = d.dump()
-      .filter((n) => (n.desc || '') === UI.DOCS.delete)
-      .sort((a, b) => b.center.y - a.center.y)[0];
-    must(confirm, 'the delete confirmation sheet did not appear');
-    d.tapPoint(confirm.center.x, confirm.center.y);
-    d.sleep(2200);
+    f.deleteRowAt(hit.row, 'qa-renamed-01');
+    f.setFilter('');
     const after = f.docCount();
     must(after === before - 1, `library ${before} -> ${after} after deleting one document`);
     return `library ${before} -> ${after}`;

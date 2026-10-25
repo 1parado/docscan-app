@@ -254,64 +254,173 @@ function tapSessionThumb(index) {
 }
 
 /**
- * Delete every listed document titled `prefix`, page by page, through the Docs
- * tab's own multi-select. Suites that create documents have to remove them
- * again — the library is the user's, not the test's.
+ * Row geometry on the Docs tab.
+ *
+ * A card's own text never reaches this ROM's uiautomator tree — the whole
+ * library screen dumps 9 nodes and none of them is a title — but its two action
+ * buttons do, and there is exactly one pair per visible row, so the 删除 button
+ * is the only reliable anchor for "the row at this y".
+ */
+function rowAnchors(nodes = d.dump()) {
+  const shares = nodes.filter((n) => (n.desc || '') === UI.DOCS.share);
+  return nodes
+    .filter((n) => (n.desc || '') === UI.DOCS.delete)
+    .map((del) => ({
+      y: del.center.y,
+      delete: del,
+      share: shares.find((s) => Math.abs(s.center.y - del.center.y) < 10) ?? null,
+    }))
+    .sort((a, b) => a.y - b.y);
+}
+
+/** The IME covers the lower rows; only press BACK when it is actually up. */
+function hideKeyboard() {
+  if (!/mIsInputViewShown=true/.test(d.adb(['shell', 'dumpsys', 'input_method']))) return false;
+  d.back();
+  d.sleep(600);
+  return true;
+}
+
+/** Type `query` into the name filter ('' clears it) and report the count shown. */
+function setFilter(query) {
+  const field = d.dump().find((n) => /EditText/i.test(n.class));
+  if (!field) throw new Error('setFilter: no name filter on this screen');
+  if (query && /[^\x20-\x7e]/.test(query)) throw new Error(`setFilter: non-ASCII query "${query}"`);
+  d.tapPoint(field.center.x, field.center.y);
+  d.sleep(700);
+  d.clearField(60);
+  if (query) d.typeText(query);
+  d.sleep(1600);
+  hideKeyboard();
+  return docCount();
+}
+
+/**
+ * Which document a row holds, read back from the rename sheet's prefilled
+ * field. The sheet is a dialog, and dialog text *does* reach the dump, so this
+ * is the only way to name a row on this device. It cancels rather than saves.
+ */
+function rowTitle(index) {
+  const row = rowAnchors()[index];
+  if (!row) return null;
+  const { w } = d.screenSize();
+  d.longPressPoint(Math.round(w * 0.28), row.y);
+  d.sleep(1700);
+  const nodes = d.dump();
+  if (!nodes.some((n) => (n.desc || n.text) === UI.DOCS.renameSheet)) {
+    d.back();
+    d.sleep(700);
+    return null;
+  }
+  const field = nodes.find((n) => /EditText/i.test(n.class));
+  const title = field ? (field.text || field.desc || '').trim() : null;
+  const cancel = nodes.find((n) => (n.desc || n.text) === UI.DOCS.cancel);
+  if (cancel) d.tapPoint(cancel.center.x, cancel.center.y);
+  else d.back();
+  d.sleep(900);
+  return title;
+}
+
+/**
+ * The one row that holds document `title`, proved twice over: the app's own
+ * name filter narrows the list to it, and the rename sheet reads the exact
+ * title back. Returns `{row, count}` or null — never a guess, because the
+ * caller is about to delete whatever this points at.
+ */
+function locateDoc(title) {
+  openDocs();
+  const count = setFilter(title);
+  if (!count) return null;
+  const rows = rowAnchors();
+  for (let i = 0; i < rows.length; i++) {
+    if (rowTitle(i) !== title) continue;
+    // The sheet closed; re-read the anchors rather than trusting stale bounds.
+    return { row: rowAnchors()[i], count };
+  }
+  return null;
+}
+
+/**
+ * Delete the row that reads back as `title`, gated on the app repeating that
+ * title in its own confirmation: a row that moved between the dump and the tap
+ * is caught here, before anything of the user's is lost, rather than after.
+ */
+function deleteRowAt(row, title) {
+  const before = docCount();
+  d.tapPoint(row.delete.center.x, row.delete.center.y);
+  d.sleep(1300);
+  const nodes = d.dump();
+  const ask = nodes.find((n) => /删除「/.test(`${n.desc || ''}${n.text || ''}`));
+  const named = ask && /删除「(.+)」/.exec(`${ask.desc || ''}${ask.text || ''}`);
+  if (!named || named[1] !== title) {
+    d.back();
+    throw new Error(`delete dialog names "${named ? named[1] : null}", expected "${title}"`);
+  }
+  // The dialog repeats 删除 on its confirm button, so aim below the question.
+  const confirm = nodes
+    .filter((n) => (n.desc || n.text) === UI.DOCS.delete && n.bounds.y1 > ask.bounds.y2)
+    .sort((a, b) => a.bounds.y1 - b.bounds.y1)[0];
+  if (!confirm) {
+    d.back();
+    throw new Error(`no confirm button in the delete dialog for "${title}"`);
+  }
+  d.tapPoint(confirm.center.x, confirm.center.y);
+  d.sleep(1600);
+  const after = docCount();
+  if (after == null || before == null || after !== before - 1) {
+    throw new Error(`library went ${before} -> ${after} after deleting one "${title}"`);
+  }
+  return after;
+}
+
+/** Find `title` by name and delete exactly that one document. */
+function deleteDoc(title) {
+  const hit = locateDoc(title);
+  if (!hit) throw new Error(`deleteDoc: no row reads back as "${title}"`);
+  const after = deleteRowAt(hit.row, title);
+  setFilter('');
+  return after;
+}
+
+/**
+ * Delete every document titled `prefix`, one at a time, through the Docs tab's
+ * own per-row delete. Suites that create documents have to remove them again —
+ * the library is the user's, not the test's.
  *
  * `exact` matters for auto-generated names: "10月25日 扫描 3" is a prefix of
  * "10月25日 扫描 30", so a prefix match here would delete the user's own
  * document. Callers that know the whole title pass `{exact: true}`.
  */
 function deleteSeeded(prefix, { rounds = 8, exact = false } = {}) {
-  const listed = (nodes) =>
-    nodes.filter((n) =>
-      exact ? (n.desc || '').trim() === prefix : (n.desc || '').startsWith(prefix)
-    );
+  const matches = (t) => (exact ? t === prefix : t.startsWith(prefix));
   let deleted = 0;
   for (let round = 0; round < rounds; round++) {
     openDocs();
     d.sleep(900);
-    const seeds = listed(d.dump());
-    if (seeds.length === 0) break;
-    const before = docCount();
-    d.tap(UI.DOCS.multiSelect);
-    d.sleep(700);
-    for (const card of seeds) d.tapPoint(card.center.x, card.center.y);
-    d.sleep(600);
-    // Gate 1: the app's own selection counter. A row that moved between the
-    // dump and the tap selects the neighbour instead, and that neighbour can be
-    // a document of the user's.
-    const chosen = readInt(/已选\s*(\d+)/);
-    if (chosen !== seeds.length) {
-      d.tap(UI.DOCS.done);
-      throw new Error(`asked to select ${seeds.length} of "${prefix}", app shows 已选 ${chosen}`);
+    if (!setFilter(prefix)) {
+      setFilter('');
+      break;
     }
-    d.tap(UI.DOCS.delete);
-    d.sleep(900);
-    // The dialog repeats the word 删除 on its confirm button, so aim at the one
-    // below the question rather than the toolbar button above it.
-    const ask = d.dump().find((n) => /个文档？/.test(`${n.desc || ''} ${n.text || ''}`));
-    if (!ask) throw new Error(`no delete confirmation after selecting ${seeds.length} rows`);
-    // Gate 2: the question has to name the same count the toolbar did.
-    const askedN = Number(/(\d+)\s*个文档？/.exec(`${ask.desc || ''} ${ask.text || ''}`)?.[1]);
-    if (askedN !== seeds.length) {
-      d.back();
-      throw new Error(`confirm dialog offers "${ask.desc || ask.text}" for ${seeds.length} selections`);
+    // Read every candidate's title back from its rename sheet: the filter is a
+    // substring match, and "10月25日 扫描 3" is a prefix of "…扫描 30".
+    const rows = rowAnchors();
+    let target = null;
+    for (let i = 0; i < rows.length; i++) {
+      const t = rowTitle(i);
+      if (t != null && matches(t)) {
+        target = { i, title: t };
+        break;
+      }
     }
-    const confirm = d
-      .dump()
-      .filter((n) => (n.desc || '') === UI.DOCS.delete && n.bounds.y1 > ask.bounds.y2)
-      .sort((a, b) => b.bounds.x1 - a.bounds.x1)[0];
-    if (!confirm) throw new Error('confirm button missing from the delete dialog');
-    d.tapPoint(confirm.center.x, confirm.center.y);
-    d.sleep(1500);
-    // Gate 3: the library shrinks by exactly that many, never more.
-    const after = docCount();
-    if (after == null || before == null || after !== before - seeds.length) {
-      throw new Error(`library went ${before} -> ${after} after deleting ${seeds.length} of "${prefix}"`);
+    if (!target) {
+      setFilter('');
+      break;
     }
-    deleted += seeds.length;
+    const row = rowAnchors()[target.i];
+    deleteRowAt(row, target.title);
+    deleted++;
   }
+  setFilter('');
   home();
   return deleted;
 }
@@ -335,6 +444,13 @@ module.exports = {
   clearSession,
   deleteSeeded,
   tapSessionThumb,
+  rowAnchors,
+  rowTitle,
+  setFilter,
+  locateDoc,
+  deleteDoc,
+  deleteRowAt,
+  hideKeyboard,
   settled,
   waitSettled,
   ensureHome,

@@ -109,3 +109,33 @@ With all three handled, three consecutive trips verify at the first tap each:
 A picker left open from an earlier run stays stacked inside the app's own task, so
 `am start` re-raises the picker and the app looks dead. Every `Suite` starts with
 `driver.resetToApp()` to clear that.
+
+## The library list on this device
+
+The Docs tab tells the harness where its rows are but not what they contain. The
+whole screen dumps 9 nodes: two tabs, the app bar, 多选, the filter `EditText`,
+日期, `N 个文档`, and one 分享/删除 pair per card. Nothing from the card body —
+not the title, not the `10月25日 10:47 · 2 页` subtitle — reaches the tree, even
+though the same widgets elsewhere on the same page (`N 个文档`, the empty-state
+text) do. The Flutter side is not at fault: a widget test with an active
+`SemanticsHandle` finds the row's label and its tap/long-press actions, so the
+node exists and the Android embedder or this ROM's dump drops it.
+
+So a row is never addressed by its text. `flows.cjs` identifies one through two
+oracles that *are* readable:
+
+- `setFilter(query)` types into the name field — the app's own search is what
+  narrows the library to the document under test — and returns the `N 个文档`
+  count it produced.
+- `rowTitle(index)` long-presses the row and reads the rename sheet's prefilled
+  `EditText`, then taps 取消. Dialog text reaches the dump, so this is the only
+  way to ask "which document is this row?" It costs ~3s per row.
+- `locateDoc(title)` requires both to agree: the filter leaves the row standing
+  alone and the sheet reads back exactly that title. It returns null rather than
+  a guess, because the caller is usually about to delete it.
+- `deleteRowAt(row, title)` then taps *that* row's 删除 and refuses to confirm
+  unless the dialog repeats the title — `删除「qa-export-01」？` — and the count
+  afterwards drops by exactly one.
+
+The per-row buttons are the geometry: `rowAnchors()` pairs each 删除 with the
+分享 at the same y, and the row body is tapped at 28% of the screen width.
