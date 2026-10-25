@@ -74,11 +74,12 @@ function toggleCrop() {
 /**
  * Import `pages` photos, one picker trip per page.
  *
- * On this ROM the picker commits a single image per tap, and the app navigates
- * to the result page after every import — so collecting N pages means
- * pick → settle → back-to-home, N times. The picker is driven by fixture *name*
- * (see picker.cjs) so a suite can deliberately feed the tilted or the
- * edgeless photo.
+ * On this ROM the picker commits a single image per tap. An import only queues
+ * the raw photo — the edge warp runs later, at 下一步 — so a page can be deleted
+ * or moved before the app spends an isolate on it, and the session view stays up
+ * between trips. Collecting N pages means pick → settle, N times. The picker is
+ * driven by fixture *name* (see picker.cjs) so a suite can deliberately feed the
+ * tilted or the edgeless photo.
  *
  * Returns a verdict object: `ok:false` means the harness could not prove the
  * import, and callers turn that into BLOCKED rather than a pass.
@@ -112,9 +113,9 @@ function ensureHome(trips = 6, settleMs = 60000) {
 }
 
 /**
- * The app is between pipeline runs when the idle view (拍摄) or a session
- * (已拍 N 页) is on screen. While it is processing, 相册 taps are dropped, so
- * waiting here is what makes a multi-page import reliable rather than lucky.
+ * The app is ready for another capture when the idle view (拍摄) or a session
+ * (已拍 N 页) is on screen. Queueing is instant, so this is about being on the
+ * right screen rather than about the pipeline being busy.
  */
 function settled(nodes = d.visibleLabels()) {
   return nodes.some((l) => l === UI.HOME.shoot || l.startsWith(UI.HOME.sessionPrefix));
@@ -132,9 +133,8 @@ function waitSettled(timeoutMs = 90000) {
 /**
  * One album trip, verified. The picker closing is not evidence that a page
  * arrived: a tap issued while the list is still gliding lands on a gap and the
- * picker just stays open, and 相册 is silently ignored while the app is still
- * processing the previous photo. So the trip only counts once the session grows
- * by one, and the whole picker is cancelled and retried until that happens.
+ * picker just stays open. So the trip only counts once the session grows by one,
+ * and the whole picker is cancelled and retried until that happens.
  */
 function importOnePage(want, { perPageMs = 90000, attempts = 3 } = {}) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -142,20 +142,12 @@ function importOnePage(want, { perPageMs = 90000, attempts = 3 } = {}) {
     if (!waitSettled()) return { ok: false, stage: 'busy', detail: `app never went idle before ${want}` };
     const before = sessionCount() ?? 0;
     // takeOne already re-taps once when the picker keeps focus; the second
-    // layer here is for the case where the whole picker opened against a busy
-    // app, which needs closing and re-opening rather than another tap.
+    // layer here is for the case where the picker opened against a list that
+    // had not settled, which needs closing and re-opening rather than another tap.
     const r = picker.takeOne(new RegExp(want), { album: UI.HOME.album, settleMs: perPageMs, taps: 2 });
     if (r.ok) {
-      // Success is the session growing by one page. The app opens the export
-      // screen by itself when an import finishes, and that screen has no 已拍
-      // label at all, so the poll has to step back out of it as it appears —
-      // otherwise a trip that worked reads as a page count of nothing.
       const end = Date.now() + Math.max(perPageMs, 60000);
       while (Date.now() < end) {
-        if (UI.onScreen(d.dump()) === 'result') {
-          d.back();
-          d.sleep(900);
-        }
         const now = sessionCount();
         if (now != null && now > before) return { ok: true, pages: now, attempt, taken: r };
         d.sleep(900);
@@ -185,12 +177,64 @@ function importPages(pages, { fixtures = DEFAULT_FIXTURES, perPageMs = 90000 } =
   return { ok: true, pages: sessionCount(), taken };
 }
 
-function openResult() {
-  // An album import opens the export screen by itself, so the session view (and
-  // with it 下一步) may already be gone. Navigate only when it is still up.
-  if (UI.onScreen(d.dump()) === 'result') return d.waitFor(UI.RESULT.save, { timeoutMs: 12000 });
+function resultPages(nodes = d.dump()) {
+  return readInt(/(\d+)\s*页\s*·\s*A4/, nodes);
+}
+
+/**
+ * Press 下一步 and wait for the export screen. The button runs every queued
+ * capture through the pipeline — one isolate per page, back to back — so the
+ * screen only appears after the last page has landed and the 处理中 counter has
+ * counted all the way up.
+ */
+function openResult({ timeoutMs = 300000 } = {}) {
+  if (UI.onScreen(d.dump()) === 'result') return d.waitFor(UI.RESULT.save, { timeoutMs });
   d.tap(UI.HOME.next);
-  d.waitFor(UI.RESULT.save, { timeoutMs: 12000 });
+  d.tryWait(UI.HOME.workingPrefix, { timeoutMs: 4000 });
+  return d.waitFor(UI.RESULT.save, { timeoutMs });
+}
+
+/**
+ * Edit mode for the page strip: a long-press on a page's own badge brings up
+ * the ◀ × ▶ row for that page, and the hint line says 排序中 while it is up.
+ * The badge sits inside the thumbnail's gesture area, so it is the one node on
+ * every page that identifies which page a tap will land on.
+ */
+function longPressPage(index, nodes = d.dump()) {
+  const badge = nodes.find((n) => (n.desc || n.text) === String(index + 1));
+  if (!badge) return null;
+  d.longPressPoint(badge.center.x, badge.center.y);
+  d.sleep(900);
+  return badge;
+}
+
+/** Tap one of a page's handles by the label the app gives it. */
+function tapPageAction(label) {
+  const n = d.find(label);
+  if (!n) return null;
+  d.tapPoint(n.center.x, n.center.y);
+  d.sleep(800);
+  return n;
+}
+
+/** x of each page badge in the strip — which slot a thumbnail is in. */
+function stripSlots(count = 3, nodes = d.dump()) {
+  return Array.from({ length: count }, (_, i) =>
+    nodes.find((n) => (n.desc || n.text) === String(i + 1))?.center.x ?? null
+  );
+}
+
+/**
+ * The strip as the user sees it: page badge x per slot, plus the x of every
+ * 待裁剪 marker. A page that moved shows up as the marker changing column —
+ * thumbnails are pixels, but the marker's slot is a number the dump can prove.
+ */
+function stripState(nodes = d.dump()) {
+  const slots = stripSlots(3, nodes);
+  const marked = nodes
+    .filter((n) => (n.desc || n.text) === UI.RESULT.cropBadge)
+    .map((n) => slots.findIndex((x) => x != null && Math.abs(x - n.center.x) < 60));
+  return { slots, marked, pages: resultPages(nodes) };
 }
 
 /**
@@ -452,6 +496,10 @@ module.exports = {
   importPages,
   importOnePage,
   openResult,
+  resultPages,
+  longPressPage,
+  tapPageAction,
+  stripState,
   exportDoc,
   makeDoc,
   clearSession,

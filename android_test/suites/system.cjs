@@ -135,21 +135,25 @@ module.exports = function system() {
     return 'session cleared';
   });
 
-  // The app opens the export screen on its own after an album import. When a
-  // photo has no detectable edge that jump hides the message telling the user to
-  // crop it, so the import must stay on the session view instead.
-  gated('undetectable page keeps the crop warning on screen', () => {
+  // A queued capture keeps its raw photo until 下一步 runs the pipeline, so an
+  // edgeless page is only known after processing. The export screen has to say
+  // so — a hint line and a marker on the page itself — instead of quietly
+  // exporting a PDF with one un-warped sheet in it.
+  gated('a page with no edge is marked on the export screen', () => {
     f.home();
     if (f.sessionCount() != null) f.clearSession();
     const r = f.importOnePage('fixture_nodoc', { perPageMs: 120000 });
     if (!r.ok) throw new Error(`import failed at stage "${r.stage}": ${JSON.stringify(r.detail)}`);
-    const screen = UI.onScreen(d.dump());
-    must(screen !== 'result', `the app jumped to the export screen; ${UI.HOME.cropWarning} is unreadable there`);
-    const hit = d.find(UI.HOME.cropWarning) || (d.sleep(1500), d.find(UI.HOME.cropWarning));
-    must(hit, `no crop warning shown — visible: ${d.visibleLabels().join(' | ')}`);
+    must(UI.onScreen(d.dump()) === 'home', 'the session view should still be up: a queued page is not processed yet');
+    f.openResult();
+    const nodes = d.dump();
+    must(d.find(UI.RESULT.cropWarning, nodes), `no crop warning; visible: ${d.visibleLabels().join(' | ')}`);
+    must(d.find(UI.RESULT.cropBadge, nodes), 'the page itself carries no 待裁剪 marker');
     s.shot('crop_warning');
+    d.back();
+    f.home();
     f.clearSession();
-    return `warning kept on "${screen}"`;
+    return 'export page names the edgeless page and marks it';
   });
 
   gated('page thumbnail opens the crop editor and cancels back', () => {
@@ -166,6 +170,57 @@ module.exports = function system() {
     d.sleep(1000);
     must(UI.onScreen(d.dump()) === 'home', 'cancel did not return to the session');
     return 'crop editor opens and cancels';
+  });
+
+  gated('a long-pressed page gets move and delete handles', () => {
+    f.home();
+    if (f.sessionCount() != null) f.clearSession();
+    const r = f.importPages(3);
+    if (!r.ok) throw new Error(`picker failed at stage "${r.stage}": ${JSON.stringify(r.detail)}`);
+    must(f.longPressPage(1) != null, 'page badge "2" not found in the session strip');
+    d.sleep(800);
+    const nodes = d.dump();
+    must(d.find(UI.HOME.editingHint, nodes), `no 排序中 hint; visible: ${d.visibleLabels().join(' | ')}`);
+    for (const label of [UI.PAGES.prev(2), UI.PAGES.delete(2), UI.PAGES.next(2)]) {
+      must(d.find(label, nodes), `handle "${label}" is not on screen`);
+    }
+    s.shot('page_handles');
+    return '◀ × ▶ all addressable on the pressed page';
+  });
+
+  gated('the delete handle drops exactly the page it sits on', () => {
+    const before = f.sessionCount();
+    must(before === 3, `expected the 3-page session from the case above, saw ${before}`);
+    must(f.longPressPage(1) != null, 'page badge "2" not found in the session strip');
+    must(f.tapPageAction(UI.PAGES.delete(2)), 'the × handle for page 2 was not tappable');
+    const after = f.sessionCount();
+    must(after === 2, `删除第 2 页 left ${after} pages instead of 2`);
+    must(d.find(UI.PAGES.delete(3)) == null, 'a handle is still offered for a page that is gone');
+    return '3 -> 2 pages, nothing else dropped';
+  });
+
+  // Thumbnails are pixels, so the dump cannot tell one page from another — but
+  // the edgeless fixture carries a 待裁剪 marker, and a marker changing column is
+  // arithmetic. The move is proven by the marker, not by a screenshot.
+  gated('the front arrow moves a page one slot', () => {
+    f.home();
+    if (f.sessionCount() != null) f.clearSession();
+    const r = f.importPages(2, { fixtures: ['fixture_nodoc', 'fixture_01'] });
+    if (!r.ok) throw new Error(`picker failed at stage "${r.stage}": ${JSON.stringify(r.detail)}`);
+    f.openResult();
+    const before = f.stripState();
+    must(before.marked.length === 1, `expected one marked page, saw ${JSON.stringify(before.marked)}`);
+    must(before.marked[0] === 0, `the edgeless import did not land in the first slot (${before.marked[0]})`);
+    must(f.longPressPage(1) != null, 'page badge "2" not found on the export strip');
+    must(f.tapPageAction(UI.PAGES.prev(2)), 'the ◀ handle for page 2 was not tappable');
+    const after = f.stripState();
+    must(after.marked[0] === 1, `the marker stayed in slot ${after.marked[0]} after ◀`);
+    must(after.pages === before.pages, `the move changed the page count to ${after.pages}`);
+    s.shot('page_moved');
+    d.back();
+    f.home();
+    f.clearSession();
+    return 'the marker moved from slot 1 to slot 2';
   });
 
   gated('export saves the doc and empties the session', () => {

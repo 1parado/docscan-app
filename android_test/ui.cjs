@@ -18,10 +18,22 @@ const HOME = {
   album: '相册',
   recents: '最近的文档',
   sessionPrefix: '已拍',
+  workingPrefix: '处理中',
   clear: '清空',
   next: '下一步',
-  cropHint: '未检测到边缘',
-  cropWarning: '有照片未检测到边缘，可在缩略图上手动裁剪',
+  sortHint: '长按页面可排序或删除',
+  editingHint: '排序中',
+};
+
+/**
+ * The ◀ × ▶ row a long-pressed page gets. The labels are the app's own
+ * semantics, so this is both the handle the suites aim at and the contract the
+ * widget has to keep.
+ */
+const PAGES = {
+  prev: (n) => `第 ${n} 页前移`,
+  delete: (n) => `删除第 ${n} 页`,
+  next: (n) => `第 ${n} 页后移`,
 };
 
 const CAMERA = {
@@ -49,6 +61,10 @@ const RESULT = {
   home: '回首页',
   share: '分享 PDF',
   exportFail: '导出失败',
+  // '有 2 页未检测到边缘 · 点页面手动裁剪' — the only place the app says a page
+  // went through the pipeline without an edge, now that the warp runs at 下一步.
+  cropWarning: '页未检测到边缘',
+  cropBadge: '待裁剪',
 };
 
 const DOCS = {
@@ -103,4 +119,4 @@ function onScreen(nodes) {
   return 'unknown';
 }
 
-module.exports = { TABS, HOME, CAMERA, ADJUST, RESULT, DOCS, DEFECT_MARKERS, SCREEN_SIGNATURES, onScreen };
+module.exports = { TABS, HOME, PAGES, CAMERA, ADJUST, RESULT, DOCS, DEFECT_MARKERS, SCREEN_SIGNATURES, onScreen };
