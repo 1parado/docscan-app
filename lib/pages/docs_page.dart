@@ -468,10 +468,20 @@ class _DocCard extends StatelessWidget {
     final date = '${doc.createdAt.month}月${doc.createdAt.day}日 '
         '${doc.createdAt.hour.toString().padLeft(2, '0')}:${doc.createdAt.minute.toString().padLeft(2, '0')}';
 
-    return GestureDetector(
+    // The row has to be one labelled element: gestures alone leave this
+    // ROM exposing no node for the card at all, so neither TalkBack nor
+    // uiautomator can tell one document from another.
+    return Semantics(
+      container: true,
+      button: true,
+      label: '${doc.title}，${date} · ${doc.pageCount} 页',
       onTap: onTap,
       onLongPress: onLongPress,
-      child: AnimatedContainer(
+      child: GestureDetector(
+        excludeFromSemantics: true,
+        onTap: onTap,
+        onLongPress: onLongPress,
+        child: AnimatedContainer(
         duration: Ds.durFast,
         curve: Ds.curve,
         decoration: BoxDecoration(
@@ -527,6 +537,7 @@ class _DocCard extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 }
